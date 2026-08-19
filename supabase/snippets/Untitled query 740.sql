@@ -1,1 +1,0 @@
-grant select, insert, update, delete on client to authenticated;
