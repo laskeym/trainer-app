@@ -1,75 +1,109 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   StyleSheet, 
   Text, 
   View, 
   ScrollView, 
   TouchableOpacity, 
-  FlatList
+  FlatList,
+  ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
 
-// Domain-specific training session data model
-const SCHEDULED_SESSIONS = [
-  {
-    id: 's1',
-    clientName: 'Paul Jones',
-    timeSlot: '09:00 AM - 10:00 AM',
-    workoutType: 'Leg Day',
-    sessionCountText: '2 sessions left',
-    locationTag: 'Beverly Hills Gym',
-    gradientColors: ['#3A1C71', '#D76D77'], // Deep Coral Purple
-  },
-  {
-    id: 's2',
-    clientName: 'Therse Spring',
-    timeSlot: '10:30 AM - 11:30 AM',
-    workoutType: 'Arm & Back',
-    sessionCountText: '5 sessions left',
-    locationTag: 'Virtual / Zoom',
-    gradientColors: ['#1f4037', '#99f2c8'], // Emerald Sea
-  },
-  {
-    id: 's3',
-    clientName: 'Sarah Jenkins',
-    timeSlot: '02:00 PM - 03:00 PM',
-    workoutType: 'Upper Body',
-    sessionCountText: '11 sessions left',
-    locationTag: 'Main Gym Floor',
-    gradientColors: ['#1e3c72', '#2a5298'], // Premium Royal Blue
-  },
-  {
-    id: 's4',
-    clientName: 'Michael Chang',
-    timeSlot: '04:30 PM - 05:15 PM',
-    workoutType: 'Cardio & HIIT',
-    sessionCountText: 'New Client',
-    locationTag: 'Zone 3 Turf',
-    gradientColors: ['#e65c00', '#F9D423'], // Electric Sunset
+import { useAuth } froom '../../lib/AuthContext';
+import { getSessionsForDate } from '../../lib/queries/sessions';
+
+// Deterministic color per workout type, so "Leg Day" always looks the same
+// across cards/days instead of being random or hardcoded per-session.
+const GRADIENT_PALETTE: [string, string][] = [
+  ['#3A1C71', '#D76D77'], // Deep Coral Purple
+  ['#1f4037', '#99f2c8'], // Emerald Sea
+  ['#1e3c72', '#2a5298'], // Premium Royal Blue
+  ['#e65c00', '#F9D423'], // Electric Sunset
+];
+
+function workoutTypeColor(workoutTypeName: string | undefined): [string, string] {
+  if (!workoutTypeName) return GRADIENT_PALETTE[0];
+  // Simple hash of the name so the same workout type always maps to the same color
+  let hash = 0;
+  for (let i = 0; i < workoutTypeName.length; i++) {
+    hash = workoutTypeName.charCodeAt(i) + ((hash << 5) - hash);
   }
-];
+  const index = Math.abs(hash) % GRADIENT_PALETTE.length;
+  return GRADIENT_PALETTE[index];
+}
 
-const DAYS_OF_WEEK = [
-  { id: 'd1', day: 'Mon', date: '16' },
-  { id: 'd2', day: 'Tue', date: '17' },
-  { id: 'd3', day: 'Wed', date: '18' },
-  { id: 'd4', day: 'Thu', date: '19' },
-  { id: 'd5', day: 'Fri', date: '20' },
-  { id: 'd6', day: 'Sat', date: '21' },
-  { id: 'd7', day: 'Sun', date: '22' },
-];
+// Formats two ISO timestamps into "09:00 AM - 10:00 AM"
+function formatTimeRange(start: string, end: string): string {
+  const format = (iso: string) =>
+    new Date(iso).toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  return `${format(start)} - ${format(end)}`;
+}
 
 export default function TrainerDashboard() {
-  const [selectedDate, setSelectedDate] = useState('18'); // Default view state
+  const router = useRouter();
+  const { session } = useAuth();
+
+  // selectedDate is now a real 'YYYY-MM-DD' string, not a bare day-of-month number
+  const [selectedDate, setSelectedDate] = useState(
+    new Date().toISOString().split('T')[0]
+  );
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchSessions = useCallback(async () => {
+    if (!session) return;
+    setLoading(true);
+    setError(null);
+    const { data, error } = await getSessionsForDate(session.user.id, selectedDate);
+    if (error) {
+      setError(error.message);
+    } else {
+      setSessions(data ?? []);
+    }
+    setLoading(false);
+  }, [session, selectedDate]);
+
+  useEffect(() => {
+    fetchSessions();
+  }, [fetchSessions]);
+
+  // Build the visible week strip as real dates around today, instead of hardcoded Sept 2025 entries
+  const weekDays = React.useMemo(() => {
+    const today = new Date();
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - today.getDay() + 1); // Monday start
+
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(startOfWeek);
+      d.setDate(startOfWeek.getDate() + i);
+      return {
+        id: d.toISOString().split('T')[0],
+        day: d.toLocaleDateString('en-US', { weekday: 'short' }),
+        date: d.getDate().toString(),
+        isoDate: d.toISOString().split('T')[0],
+      };
+    });
+  }, []);
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Top Meta Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.monthLabel}>SEPTEMBER 2025</Text>
+          <Text style={styles.monthLabel}>
+            {new Date(selectedDate).toLocaleDateString('en-US', {
+              month: 'long',
+              year: 'numeric',
+            }).toUpperCase()}
+          </Text>
           <Text style={styles.screenTitle}>Gym Schedule</Text>
         </View>
         <View style={styles.headerActions}>
@@ -82,16 +116,15 @@ export default function TrainerDashboard() {
         </View>
       </View>
 
-      {/* Synchronized Weekly Calendar Strip */}
       <View style={styles.calendarStrip}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.calendarScroll}>
-          {DAYS_OF_WEEK.map((item) => {
-            const isSelected = item.date === selectedDate;
+          {weekDays.map((item) => {
+            const isSelected = item.isoDate === selectedDate;
             return (
-              <TouchableOpacity 
-                key={item.id} 
+              <TouchableOpacity
+                key={item.id}
                 style={[styles.dateBubble, isSelected && styles.selectedDateBubble]}
-                onPress={() => setSelectedDate(item.date)}
+                onPress={() => setSelectedDate(item.isoDate)}
               >
                 <Text style={[styles.dayLabel, isSelected && styles.selectedText]}>{item.day}</Text>
                 <Text style={[styles.dateLabel, isSelected && styles.selectedText]}>{item.date}</Text>
@@ -101,54 +134,69 @@ export default function TrainerDashboard() {
         </ScrollView>
       </View>
 
-      {/* Scheduled Sessions FlatList using Gradient Cards */}
-      <FlatList
-        data={SCHEDULED_SESSIONS}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContainer}
-        showsVerticalScrollIndicator={false}
-        renderItem={({ item }) => (
-          <TouchableOpacity activeOpacity={0.9} style={styles.cardWrapper}>
-            <LinearGradient
-              colors={item.gradientColors}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.cardGradient}
+      {loading ? (
+        <ActivityIndicator style={{ marginTop: 40 }} />
+      ) : error ? (
+        <Text style={{ padding: 24, color: '#8E8E93' }}>Couldn't load sessions: {error}</Text>
+      ) : sessions.length === 0 ? (
+        <Text style={{ padding: 24, color: '#8E8E93' }}>No sessions scheduled for this day.</Text>
+      ) : (
+        <FlatList
+          data={sessions}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContainer}
+          showsVerticalScrollIndicator={false}
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              activeOpacity={0.9}
+              style={styles.cardWrapper}
+              onPress={() => router.push(`/session/${item.id}`)}
             >
-              {/* NEW Top Section: Client Avatar, Name, and Time Slot */}
-              <View style={styles.cardRow}>
-                <View style={styles.clientMetaHeader}>
-                  <View style={styles.avatarPlaceholder}>
-                    <Text style={styles.avatarInitial}>{item.clientName.charAt(0)}</Text>
+              <LinearGradient
+                colors={workoutTypeColor(item.day_type_template?.name)}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cardGradient}
+              >
+                <View style={styles.cardRow}>
+                  <View style={styles.clientMetaHeader}>
+                    <View style={styles.avatarPlaceholder}>
+                      <Text style={styles.avatarInitial}>{item.client.name.charAt(0)}</Text>
+                    </View>
+                    <View>
+                      <Text style={styles.clientNameHeaderLabel}>{item.client.name}</Text>
+                      <Text style={styles.timeSlotLabel}>
+                        {formatTimeRange(item.scheduled_start, item.scheduled_end)}
+                      </Text>
+                    </View>
                   </View>
-                  <View>
-                    <Text style={styles.clientNameHeaderLabel}>{item.clientName}</Text>
-                    <Text style={styles.timeSlotLabel}>{item.timeSlot}</Text>
+                  <View style={styles.actionPill}>
+                    <Ionicons name="play" size={12} color="#FFF" />
                   </View>
                 </View>
-                <View style={styles.actionPill}>
-                  <Ionicons name="play" size={12} color="#FFF" />
-                </View>
-              </View>
 
-              {/* NEW Lower Section: Workout Target, Location, and Sessions Remaining */}
-              <View style={styles.cardFooter}>
-                <View>
-                  <Text style={styles.workoutTypeLabel}>{item.workoutType}</Text>
-                  <View style={styles.locationMeta}>
-                    <Ionicons name="location" size={12} color="rgba(255,255,255,0.75)" />
-                    <Text style={styles.locationText}>{item.locationTag}</Text>
+                <View style={styles.cardFooter}>
+                  <View>
+                    <Text style={styles.workoutTypeLabel}>{item.day_type_template?.name}</Text>
+                    <View style={styles.locationMeta}>
+                      <Ionicons name="location" size={12} color="rgba(255,255,255,0.75)" />
+                      <Text style={styles.locationText}>{item.location}</Text>
+                    </View>
                   </View>
                 </View>
-                
-                <View style={styles.packageBadge}>
-                  <Text style={styles.packageText}>{item.sessionCountText}</Text>
-                </View>
-              </View>
-            </LinearGradient>
-          </TouchableOpacity>
-        )}
-      />
+              </LinearGradient>
+            </TouchableOpacity>
+          )}
+        />
+      )}
+
+      <TouchableOpacity
+        style={styles.fab}
+        activeOpacity={0.85}
+        onPress={() => router.push('/session/new')}
+      >
+        <Ionicons name="add" size={28} color="#FFF" />
+      </TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -323,5 +371,22 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#FFF',
     fontWeight: '600',
+  },
+  // add to your existing StyleSheet.create({...}) block
+fab: {
+    position: 'absolute',
+    right: 24,
+    bottom: 84, // clears the 60px tab bar + its 8px bottom padding, plus a bit of breathing room
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#1C1C1E', // matches your selectedDateBubble/high-contrast accent color
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6, // Android shadow equivalent
   },
 });
