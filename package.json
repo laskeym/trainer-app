@@ -3,10 +3,12 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {
+    "@expo/vector-icons": "^15.0.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "^57.0.14",
     "expo-constants": "~57.0.12",
     "expo-font": "~57.0.1",
+    "expo-linear-gradient": "~57.0.1",
     "expo-linking": "~57.0.6",
     "expo-modules-core": "~57.0.11",
     "expo-router": "~57.0.14",
@@ -26,7 +28,9 @@
   },
   "devDependencies": {
     "@supabase/supabase-js": "^2.112.3",
+    "@testing-library/react-native": "^14.0.1",
     "@types/react": "~19.2.2",
+    "dotenv": "^17.4.2",
     "jest-expo": "^57.0.4",
     "typescript": "~6.0.3"
   },
