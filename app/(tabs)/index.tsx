@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 
-import { useAuth } froom '../../lib/AuthContext';
+import { useAuth } from '../../lib/AuthContext';
 import { getSessionsForDate } from '../../lib/queries/sessions';
 
 // Deterministic color per workout type, so "Leg Day" always looks the same
@@ -376,7 +376,7 @@ const styles = StyleSheet.create({
 fab: {
     position: 'absolute',
     right: 24,
-    bottom: 84, // clears the 60px tab bar + its 8px bottom padding, plus a bit of breathing room
+    bottom: 36, // clears the 60px tab bar + its 8px bottom padding, plus a bit of breathing room
     width: 56,
     height: 56,
     borderRadius: 28,

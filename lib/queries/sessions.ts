@@ -1,6 +1,7 @@
 // lib/queries/sessions.ts
 import { supabase } from '../supabase'
 
+// lib/queries/sessions.ts
 export async function getSessionsForDate(trainerId: string, date: string) {
   const startOfDay = `${date}T00:00:00`
   const endOfDay = `${date}T23:59:59`
@@ -20,7 +21,7 @@ export async function getSessionsForDate(trainerId: string, date: string) {
     .gte('scheduled_start', startOfDay)
     .lte('scheduled_start', endOfDay)
     .order('scheduled_start', { ascending: true })
-    .order('client.name', { ascending: true })
+    .order('name', { ascending: true, foreignTable: 'client' })
 
   return { data, error }
 }
