@@ -12,7 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { client } from '../../lib/supabase'; 
+import { supabase } from '../../lib/supabase';
 import { getClientsForTrainer } from '../../lib/queries/clients';
 
 export default function ClientsScreen() {
@@ -28,7 +28,7 @@ export default function ClientsScreen() {
 
       async function fetchClientDirectory() {
         try {
-          const { data: { user } } = await client.auth.getUser();
+          const { data: { user } } = await supabase.auth.getUser();
           if (!user) return;
 
           const { data, error } = await getClientsForTrainer(user.id);

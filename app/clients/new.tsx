@@ -13,7 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context'; // Optimized context package import
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { client } from '../../lib/supabase';
+import { supabase } from '../../lib/supabase';
 import { createClient } from '../../lib/queries/clients'; // Clean abstracted backend query layout
 
 export default function AddClientScreen() {
@@ -35,7 +35,7 @@ export default function AddClientScreen() {
     setLoading(true);
 
     try {
-      const { data: { user }, error: userError } = await client.auth.getUser();
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
       
       if (userError || !user) {
         throw new Error(userError?.message || 'Authenticated trainer session not found.');
