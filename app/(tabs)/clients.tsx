@@ -1,32 +1,58 @@
-import React, { useState } from 'react';
+// app/(tabs)/clients.tsx
+import React, { useState, useCallback } from 'react';
 import { 
   StyleSheet, 
   Text, 
   View, 
   FlatList, 
   TouchableOpacity, 
-  TextInput
+  TextInput, 
+  ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-
-const MOCK_CLIENTS = [
-  { id: 'c1', name: 'Paul Jones', sessionsLeft: 2, constraint: 'Knee injury rehabilitation', goals: 'Hypertrophy' },
-  { id: 'c2', name: 'Therse Spring', sessionsLeft: 5, constraint: 'None', goals: 'Mobility & Splits' },
-  { id: 'c3', name: 'Sarah Jenkins', sessionsLeft: 11, constraint: 'Lower back tightness', goals: 'Cardio stamina' },
-];
+import { useRouter, useFocusEffect } from 'expo-router';
+import { client } from '../../lib/supabase'; 
+import { getClientsForTrainer } from '../../lib/queries/clients';
 
 export default function ClientsScreen() {
   const router = useRouter();
   const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [clients, setClients] = useState<any[]>([]);
 
-  const filteredClients = MOCK_CLIENTS.filter(c => 
+  // Automatically refresh directories whenever this tab panel comes into active user view focus
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+
+      async function fetchClientDirectory() {
+        try {
+          const { data: { user } } = await client.auth.getUser();
+          if (!user) return;
+
+          const { data, error } = await getClientsForTrainer(user.id);
+          if (error) throw error;
+
+          if (isMounted) setClients(data || []);
+        } catch (err) {
+          console.error('❌ Failed loading client data collection feed:', err);
+        } finally {
+          if (isMounted) setLoading(false);
+        }
+      }
+
+      fetchClientDirectory();
+      return () => { isMounted = false; };
+    }, [])
+  );
+
+  const filteredClients = clients.filter(c => 
     c.name.toLowerCase().includes(search.toLowerCase())
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* Header Profile Title */}
       <View style={styles.header}>
         <View>
@@ -47,46 +73,54 @@ export default function ClientsScreen() {
         />
       </View>
 
-      {/* Main Content Feed */}
-      <FlatList
-        data={filteredClients}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContainer}
-        showsVerticalScrollIndicator={false}
-        renderItem={({ item }) => (
-          <TouchableOpacity 
-            activeOpacity={0.8}
-            onPress={() => router.push(`/clients/${item.id}`)}
-          >
-            <View style={styles.clientCard}>
+      {/* Core Loader Guard Clause Block */}
+      {loading ? (
+        <View style={styles.centerLoader}>
+          <ActivityIndicator size="large" color="#1C1C1E" />
+        </View>
+      ) : (
+        <FlatList
+          data={filteredClients}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContainer}
+          showsVerticalScrollIndicator={false}
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>No clients found. Add one below!</Text>
+          }
+          renderItem={({ item }) => (
+            <TouchableOpacity 
+              activeOpacity={0.8} 
+              style={styles.clientCard}
+              onPress={() => router.push(`/clients/${item.id}`)}
+            >
               <View style={styles.cardHeader}>
                 <View style={styles.profileRow}>
                   <View style={styles.avatarPlaceholder}>
                     <Text style={styles.avatarText}>{item.name.charAt(0)}</Text>
                   </View>
-                  <View>
+                  <View style={styles.clientMetaText}>
                     <Text style={styles.clientName}>{item.name}</Text>
-                    <Text style={styles.clientGoals}>{item.goals}</Text>
+                    <Text style={styles.clientGoals} numberOfLines={1}>{item.goals}</Text>
                   </View>
                 </View>
-                <View style={styles.countBadge}>
-                  <Text style={styles.countText}>{item.sessionsLeft} left</Text>
+                <View style={styles.chevronIcon}>
+                  <Ionicons name="chevron-forward" size={16} color="#C7C7CC" />
                 </View>
               </View>
 
-              {/* Collateral Attributes Matrix Row */}
+              {/* Functional Operational Safety Constraint Tag Line */}
               <View style={styles.constraintBox}>
-                <Ionicons name="alert-circle-outline" size={14} color="#AEAEE2" />
+                <Ionicons name="alert-circle-outline" size={14} color="#8E8E93" />
                 <Text style={styles.constraintText} numberOfLines={1}>
                   {item.constraint}
                 </Text>
               </View>
-            </View>
-          </TouchableOpacity>
-        )}
-      />
+            </TouchableOpacity>
+          )}
+        />
+      )}
 
-      {/* Floating Action Button (FAB) Dock */}
+      {/* Floating Action Capsule Button Dock Layout */}
       <TouchableOpacity 
         style={styles.fabButton}
         onPress={() => router.push('/clients/new')}
@@ -137,10 +171,15 @@ const styles = StyleSheet.create({
     color: '#1C1C1E',
     fontSize: 15,
   },
+  centerLoader: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   listContainer: {
     paddingHorizontal: 24,
     paddingTop: 16,
-    paddingBottom: 100, // Provides clearance for FAB block anchors
+    paddingBottom: 100,
   },
   clientCard: {
     backgroundColor: '#FFF',
@@ -162,6 +201,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    flex: 1,
   },
   avatarPlaceholder: {
     width: 44,
@@ -176,6 +216,9 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 16,
   },
+  clientMetaText: {
+    flex: 1,
+  },
   clientName: {
     fontSize: 16,
     fontWeight: '700',
@@ -185,32 +228,32 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#8E8E93',
     marginTop: 1,
+    maxWidth: '95%',
   },
-  countBadge: {
-    backgroundColor: '#F2F2F7',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-  },
-  countText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1C1C1E',
+  chevronIcon: {
+    paddingLeft: 8,
   },
   constraintBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F4F4F9',
+    backgroundColor: '#F2F2F7',
     paddingHorizontal: 10,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: 10,
     gap: 6,
-    marginTop: 12,
+    marginTop: 14,
   },
   constraintText: {
     fontSize: 12,
     color: '#48484A',
+    fontWeight: '500',
     flex: 1,
+  },
+  emptyText: {
+    textAlign: 'center',
+    color: '#8E8E93',
+    marginTop: 40,
+    fontSize: 15,
   },
   fabButton: {
     position: 'absolute',
