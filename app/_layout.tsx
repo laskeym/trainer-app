@@ -58,11 +58,26 @@ function RootLayoutNav() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <Stack>
+        <Stack.Protected guard={!session}>
+          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+        </Stack.Protected>
+        
         <Stack.Protected guard={!!session}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         </Stack.Protected>
-        <Stack.Protected guard={!session}>
-          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+
+        <Stack.Protected guard={!!session}>
+          <Stack.Screen 
+            name="clients/new" 
+            options={{ 
+              presentation: 'modal', // Makes it slide up beautifully as a native card overlay!
+              title: 'Add New Client',
+              headerShown: false 
+            }} 
+          />
+        </Stack.Protected>
+        <Stack.Protected guard={!!session}>
+          <Stack.Screen name="clients/[id]/index" options={{ headerShown: false }} />
         </Stack.Protected>
       </Stack>
     </ThemeProvider>
