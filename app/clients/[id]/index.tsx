@@ -1,38 +1,56 @@
-import React, { useState } from 'react';
+// app/clients/[id]/index.tsx
+import React, { useState, useCallback } from 'react';
 import { 
   StyleSheet, 
   Text, 
   View, 
   ScrollView, 
   TouchableOpacity, 
-  FlatList
+  ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-
-// Mock combined detail payload matching our new relational table structure
-const MOCK_PROFILE_DATA = {
-  id: 'c1',
-  name: 'Paul Jones',
-  height: '182 cm',
-  fitnessGoals: 'Hypertrophy & Lower Body Power',
-  medicalConstraints: 'Knee injury rehabilitation (Left ACL post-op)',
-  metricsHistory: [
-    { id: 'm1', date: '2026-08-20', weight: '84.2 kg', bodyFat: '14.2%' },
-    { id: 'm2', date: '2026-07-20', weight: '85.5 kg', bodyFat: '15.1%' },
-    { id: 'm3', date: '2026-06-20', weight: '87.1 kg', bodyFat: '16.5%' },
-  ]
-};
+import { getClientDetailsWithHistory } from '../../../lib/queries/clients';
 
 export default function ClientProfileDetailsScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
-  const [profile] = useState(MOCK_PROFILE_DATA); // Will fetch via client.from('client').select() later
+  const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<any>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+
+      async function fetchFullProfile() {
+        try {
+          const { data, error } = await getClientDetailsWithHistory(id as string);
+          if (error) throw error;
+          if (isMounted) setProfile(data);
+        } catch (err) {
+          console.error('❌ Error fetching profile history dataset:', err);
+        } finally {
+          if (isMounted) setLoading(false);
+        }
+      }
+
+      fetchFullProfile();
+      return () => { isMounted = false; };
+    }, [id])
+  );
+
+  if (loading || !profile) {
+    return (
+      <SafeAreaView style={styles.centerLoader}>
+        <ActivityIndicator size="large" color="#1C1C1E" />
+      </SafeAreaView>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Custom Action Navigation Bar */}
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      {/* Custom Navigation Bar */}
       <View style={styles.navBar}>
         <TouchableOpacity onPress={() => router.back()} style={styles.iconButton}>
           <Ionicons name="chevron-back" size={24} color="#1C1C1E" />
@@ -50,9 +68,21 @@ export default function ClientProfileDetailsScreen() {
             <Text style={styles.avatarText}>{profile.name.charAt(0)}</Text>
           </View>
           <Text style={styles.clientNameTitle}>{profile.name}</Text>
-          <View style={styles.heightTag}>
-            <Ionicons name="resize-outline" size={14} color="#8E8E93" />
-            <Text style={styles.heightText}>Height: {profile.height}</Text>
+          
+          {/* Horizontal Profile Static & Dynamic Metrics Preview Pills Row */}
+          <View style={styles.tagsRow}>
+            <View style={styles.profileMetricTag}>
+              <Ionicons name="resize-outline" size={13} color="#8E8E93" />
+              <Text style={styles.tagText}>H: {profile.height}</Text>
+            </View>
+            <View style={styles.profileMetricTag}>
+              <Ionicons name="scale-outline" size={13} color="#8E8E93" />
+              <Text style={styles.tagText}>W: {profile.currentWeight}</Text>
+            </View>
+            <View style={styles.profileMetricTag}>
+              <Ionicons name="fitness-outline" size={13} color="#8E8E93" />
+              <Text style={styles.tagText}>BF: {profile.currentBodyFat}</Text>
+            </View>
           </View>
         </View>
 
@@ -61,12 +91,14 @@ export default function ClientProfileDetailsScreen() {
           <Text style={styles.sectionHeader}>STATIC ATTRIBUTES</Text>
           
           <View style={styles.attributeBlock}>
-            <Text style={styles.attributeLabel}>FITNESS GOALS & FOCUS</Text>
+            <Text style={styles.attributeLabel}>FITNESS GOAL OR FOCUS</Text>
             <Text style={styles.attributeValueText}>{profile.fitnessGoals}</Text>
           </View>
 
-          <View style={[styles.attributeBlock, styles.dangerBorder]}>
-            <Text style={[styles.attributeLabel, { color: '#FF3B30' }]}>MEDICAL CONSTRAINTS</Text>
+          <View style={[styles.attributeBlock, profile.medicalConstraints !== 'None' && styles.dangerBorder]}>
+            <Text style={[styles.attributeLabel, profile.medicalConstraints !== 'None' && { color: '#FF3B30' }]}>
+              MEDICAL CONSTRAINTS
+            </Text>
             <Text style={styles.attributeValueText}>{profile.medicalConstraints}</Text>
           </View>
         </View>
@@ -82,25 +114,29 @@ export default function ClientProfileDetailsScreen() {
           </View>
 
           {/* Historical Data Feed Table Rows */}
-          {profile.metricsHistory.map((metric) => (
-            <View key={metric.id} style={styles.metricRowCard}>
-              <View>
-                <Text style={styles.metricDateText}>
-                  {new Date(metric.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                </Text>
-              </View>
-              <View style={styles.metricValuesGroup}>
-                <View style={styles.valueItem}>
-                  <Text style={styles.valueMetaLabel}>WEIGHT</Text>
-                  <Text style={styles.valueNumber}>{metric.weight}</Text>
+          {profile.metricsHistory.length === 0 ? (
+            <Text style={styles.emptyMetricsText}>No historical metric logs found for this client.</Text>
+          ) : (
+            profile.metricsHistory.map((metric: any) => (
+              <View key={metric.id} style={styles.metricRowCard}>
+                <View>
+                  <Text style={styles.metricDateText}>
+                    {new Date(metric.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </Text>
                 </View>
-                <View style={styles.valueItem}>
-                  <Text style={styles.valueMetaLabel}>BODY FAT</Text>
-                  <Text style={styles.valueNumber}>{metric.bodyFat}</Text>
+                <View style={styles.metricValuesGroup}>
+                  <View style={styles.valueItem}>
+                    <Text style={styles.valueMetaLabel}>WEIGHT</Text>
+                    <Text style={styles.valueNumber}>{metric.weight ? `${metric.weight} kg` : '--'}</Text>
+                  </View>
+                  <View style={styles.valueItem}>
+                    <Text style={styles.valueMetaLabel}>BODY FAT</Text>
+                    <Text style={styles.valueNumber}>{metric.body_fat_pct ? `${metric.body_fat_pct}%` : '--'}</Text>
+                  </View>
                 </View>
               </View>
-            </View>
-          ))}
+            ))
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -110,6 +146,12 @@ export default function ClientProfileDetailsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#F9F9FB',
+  },
+  centerLoader: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
     backgroundColor: '#F9F9FB',
   },
   navBar: {
@@ -167,20 +209,24 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1C1C1E',
   },
-  heightTag: {
+  tagsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  profileMetricTag: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    marginTop: 6,
     backgroundColor: '#F2F2F7',
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: 8,
   },
-  heightText: {
-    fontSize: 13,
-    color: '#8E8E93',
-    fontWeight: '500',
+  tagText: {
+    fontSize: 12,
+    color: '#48484A',
+    fontWeight: '600',
   },
   sectionHeader: {
     fontSize: 11,
@@ -266,5 +312,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1C1C1E',
     marginTop: 2,
+  },
+  emptyMetricsText: {
+    color: '#8E8E93',
+    fontSize: 14,
+    textAlign: 'center',
+    marginTop: 12,
+    fontStyle: 'italic',
   },
 });

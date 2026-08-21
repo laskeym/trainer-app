@@ -1,3 +1,4 @@
+// app/clients/new.tsx
 import React, { useState } from 'react';
 import { 
   StyleSheet, 
@@ -5,27 +6,75 @@ import {
   View, 
   TextInput, 
   TouchableOpacity, 
-  ScrollView 
+  ScrollView, 
+  ActivityIndicator,
+  Alert
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context'; // Optimized context package import
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { client } from '../../lib/supabase';
+import { createClient } from '../../lib/queries/clients'; // Clean abstracted backend query layout
 
 export default function AddClientScreen() {
   const router = useRouter();
-  const [form, setForm] = useState({ name: '', target: '', constraints: '', accountSessions: '10' });
+  const [loading, setLoading] = useState(false);
+  const [form, setForm] = useState({ 
+    name: '', 
+    height: '', 
+    target: '', 
+    constraints: '' 
+  });
 
-  const handleSave = () => {
-    // This input model will map cleanly into your client table insertion test cases next
-    console.log('Inserting payload structure into Supabase target:', form);
-    router.back();
+  const handleSave = async () => {
+    if (!form.name.trim()) {
+      Alert.alert('Required Field', 'Please enter the client full name.');
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const { data: { user }, error: userError } = await client.auth.getUser();
+      
+      if (userError || !user) {
+        throw new Error(userError?.message || 'Authenticated trainer session not found.');
+      }
+
+      const parsedHeight = form.height.trim() ? parseFloat(form.height) : null;
+
+      // Call our clean external query function directly
+      const { error: insertError } = await createClient({
+        trainerId: user.id,
+        name: form.name.trim(),
+        height: isNaN(parsedHeight as number) ? null : parsedHeight,
+        fitnessGoals: form.target.trim() || null,
+        medicalConstraints: form.constraints.trim() || 'None',
+      });
+
+      if (insertError) throw insertError;
+
+      Alert.alert('Success', 'Client profile successfully logged!', [
+        { text: 'OK', onPress: () => router.back() }
+      ]);
+
+    } catch (error: any) {
+      console.error('❌ Failed to mutate client record row:', error.message);
+      Alert.alert('Database Mutation Failed', error.message || 'An unexpected server issue occurred.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <SafeAreaView style={styles.container}>
       {/* Navigation App Header */}
       <View style={styles.navBar}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+        <TouchableOpacity 
+          onPress={() => router.back()} 
+          style={styles.backButton}
+          disabled={loading}
+        >
           <Ionicons name="chevron-back" size={24} color="#1C1C1E" />
         </TouchableOpacity>
         <Text style={styles.navTitle}>New Profile</Text>
@@ -35,13 +84,28 @@ export default function AddClientScreen() {
       <ScrollView contentContainerStyle={styles.formScroll} keyboardShouldPersistTaps="handled">
         {/* Attribute Block: Name */}
         <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>CLIENT FULL NAME</Text>
+          <Text style={styles.inputLabel}>CLIENT FULL NAME *</Text>
           <TextInput
             placeholder="John Doe"
-            placeholderTextColor="#AEAEE2"
+            placeholderTextColor="#C7C7CC"
             style={styles.inputField}
             value={form.name}
             onChangeText={(v) => setForm(p => ({ ...p, name: v }))}
+            editable={!loading}
+          />
+        </View>
+
+        {/* Attribute Block: Static Height Profile Attribute */}
+        <View style={styles.inputGroup}>
+          <Text style={styles.inputLabel}>HEIGHT (CM)</Text>
+          <TextInput
+            placeholder="182"
+            placeholderTextColor="#C7C7CC"
+            keyboardType="numeric"
+            style={styles.inputField}
+            value={form.height}
+            onChangeText={(v) => setForm(p => ({ ...p, height: v }))}
+            editable={!loading}
           />
         </View>
 
@@ -50,10 +114,11 @@ export default function AddClientScreen() {
           <Text style={styles.inputLabel}>FITNESS GOAL OR FOCUS</Text>
           <TextInput
             placeholder="Weight loss, Strength training..."
-            placeholderTextColor="#AEAEE2"
+            placeholderTextColor="#C7C7CC"
             style={styles.inputField}
             value={form.target}
             onChangeText={(v) => setForm(p => ({ ...p, target: v }))}
+            editable={!loading}
           />
         </View>
 
@@ -62,29 +127,27 @@ export default function AddClientScreen() {
           <Text style={styles.inputLabel}>MEDICAL OR PHYSICAL CONSTRAINTS</Text>
           <TextInput
             placeholder="Sciatica history, shoulder instability..."
-            placeholderTextColor="#AEAEE2"
+            placeholderTextColor="#C7C7CC"
             multiline
             numberOfLines={3}
             style={[styles.inputField, styles.textArea]}
             value={form.constraints}
             onChangeText={(v) => setForm(p => ({ ...p, constraints: v }))}
-          />
-        </View>
-
-        {/* Attribute Block: Package Allocation Count */}
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>PRE-PAID SESSION BALANCE</Text>
-          <TextInput
-            keyboardType="number-pad"
-            style={styles.inputField}
-            value={form.accountSessions}
-            onChangeText={(v) => setForm(p => ({ ...p, accountSessions: v }))}
+            editable={!loading}
           />
         </View>
 
         {/* Submit Save Button */}
-        <TouchableOpacity style={styles.submitButton} onPress={handleSave}>
-          <Text style={styles.submitButtonText}>Create Client Profile</Text>
+        <TouchableOpacity 
+          style={[styles.submitButton, loading && styles.disabledButton]} 
+          onPress={handleSave}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator size="small" color="#FFF" />
+          ) : (
+            <Text style={styles.submitButtonText}>Create Client Profile</Text>
+          )}
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
@@ -149,6 +212,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 16,
+  },
+  disabledButton: {
+    backgroundColor: '#3A3A3C',
+    opacity: 0.7,
   },
   submitButtonText: {
     color: '#FFF',
