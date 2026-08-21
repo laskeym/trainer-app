@@ -1,5 +1,5 @@
 // lib/queries/clients.ts
-import { client } from '../supabase';
+import { supabase } from '../supabase';
 
 export interface CreateClientInput {
   trainerId: string;
@@ -13,7 +13,7 @@ export interface CreateClientInput {
  * 1. CREATE MUTATION: Persists a new client record
  */
 export async function createClient(input: CreateClientInput) {
-  const { data, error } = await client
+  const { data, error } = await supabase
     .from('client')
     .insert({
       trainer_id: input.trainerId,
@@ -33,9 +33,9 @@ export async function createClient(input: CreateClientInput) {
  * This completely isolates your main dashboard feed from historical metric processing.
  */
 export async function getClientsForTrainer(trainerId: string) {
-  const { data, error } = await client
+  const { data, error } = await supabase
     .from('client')
-    .select('id', 'name', 'fitness_goals', 'medical_constraints')
+    .select('id, name, fitness_goals, medical_constraints')
     .eq('trainer_id', trainerId)
     .order('name', { ascending: true });
 
@@ -57,7 +57,7 @@ export async function getClientsForTrainer(trainerId: string) {
  * Pulls the single client row and joins all timeline tracking entries.
  */
 export async function getClientDetailsWithHistory(clientId: string) {
-  const { data, error } = await client
+  const { data, error } = await supabase
     .from('client')
     .select(`
       id,
