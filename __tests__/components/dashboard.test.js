@@ -36,8 +36,7 @@ describe('Trainer Dashboard', () => {
 
     it('shows the empty state', async () => {
       await render(<TrainerDashboard />);
-      const emptyStateMessage = screen.findByText('No sessions scheduled for this day.');
-      // const emptyStateMessage = await screen.findByText('No sessions scheduled for this day.');
+      const emptyStateMessage = await screen.findByText('No sessions scheduled for this day.');
       expect(emptyStateMessage).toBeTruthy()
     })
   })
