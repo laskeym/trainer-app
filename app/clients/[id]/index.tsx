@@ -1,5 +1,5 @@
 // app/clients/[id]/index.tsx
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   StyleSheet, 
   Text, 
@@ -9,7 +9,7 @@ import {
   ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { getClientDetailsWithHistory } from '../../../lib/queries/clients';
 
@@ -19,7 +19,7 @@ export default function ClientProfileDetailsScreen() {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<any>(null);
 
-  useFocusEffect(
+  useEffect(
     useCallback(() => {
       let isMounted = true;
 

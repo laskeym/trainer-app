@@ -1,5 +1,5 @@
 // app/(tabs)/clients.tsx
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   StyleSheet, 
   Text, 
@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { getClientsForTrainer } from '../../lib/queries/clients';
 
@@ -22,7 +22,7 @@ export default function ClientsScreen() {
   const [clients, setClients] = useState<any[]>([]);
 
   // Automatically refresh directories whenever this tab panel comes into active user view focus
-  useFocusEffect(
+  useEffect(
     useCallback(() => {
       let isMounted = true;
 
