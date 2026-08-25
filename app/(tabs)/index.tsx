@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { 
   StyleSheet, 
   Text, 
@@ -11,10 +11,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 
 import { useAuth } from '../../lib/AuthContext';
-import { getSessionsForDate } from '../../lib/queries/sessions';
+import { getSessionsForDate, getSessionsForDateRange } from '../../lib/queries/sessions';
+import MonthCalendarModal from '../../components/MonthCalendarModal';
 
 // Deterministic color per workout type, so "Leg Day" always looks the same
 // across cards/days instead of being random or hardcoded per-session.
@@ -47,17 +48,33 @@ function formatTimeRange(start: string, end: string): string {
   return `${format(start)} - ${format(end)}`;
 }
 
+// Local-calendar-date formatting (not toISOString(), which shifts to UTC —
+// for a trainer behind UTC, e.g. Buenos Aires, that can silently roll the
+// date to "yesterday" late in the evening).
+function toIsoDateLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = (d.getMonth() + 1).toString().padStart(2, '0');
+  const day = d.getDate().toString().padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseIsoDateLocal(iso: string): Date {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
 export default function TrainerDashboard() {
   const router = useRouter();
   const { session } = useAuth();
 
-  // selectedDate is now a real 'YYYY-MM-DD' string, not a bare day-of-month number
-  const [selectedDate, setSelectedDate] = useState(
-    new Date().toISOString().split('T')[0]
-  );
+  // selectedDate is a real 'YYYY-MM-DD' string, computed from local calendar
+  // date components (see toIsoDateLocal above).
+  const [selectedDate, setSelectedDate] = useState(() => toIsoDateLocal(new Date()));
   const [sessions, setSessions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [calendarVisible, setCalendarVisible] = useState(false);
+  const [markedDates, setMarkedDates] = useState<Set<string>>(new Set());
 
   const fetchSessions = useCallback(async () => {
     if (!session) return;
@@ -72,34 +89,61 @@ export default function TrainerDashboard() {
     setLoading(false);
   }, [session, selectedDate]);
 
-  useEffect(() => {
-    fetchSessions();
-  }, [fetchSessions]);
+  // useFocusEffect (not a plain useEffect) so this refetches every time the
+  // dashboard tab regains focus — including when returning from the
+  // schedule-session modal via router.back(). A plain useEffect keyed on
+  // fetchSessions only reruns when `session`/`selectedDate` actually change,
+  // and since tab screens stay mounted, coming back from the modal changes
+  // neither — the list would otherwise show stale data until the user
+  // switched days and back. Same pattern already used in clients.tsx.
+  useFocusEffect(
+    useCallback(() => {
+      fetchSessions();
+    }, [fetchSessions])
+  );
 
-  // Build the visible week strip as real dates around today, instead of hardcoded Sept 2025 entries
+  // Fetches which dates within a given month have at least one session, to
+  // drive the calendar picker's dot indicators. monthAnchorIso is the 1st of
+  // whichever month the calendar is currently showing.
+  const fetchMarkedDatesForMonth = useCallback(async (monthAnchorIso: string) => {
+    if (!session) return;
+    const anchor = parseIsoDateLocal(monthAnchorIso);
+    const monthStart = toIsoDateLocal(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+    const monthEnd = toIsoDateLocal(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0));
+
+    const { data, error } = await getSessionsForDateRange(session.user.id, monthStart, monthEnd);
+    if (!error && data) {
+      setMarkedDates(new Set(data.map((s: any) => toIsoDateLocal(new Date(s.scheduled_start)))));
+    }
+  }, [session]);
+
+  // Build the visible week strip as real dates around whichever date is
+  // currently selected (not always "today"), so jumping to a future date via
+  // the calendar picker re-centers the strip on that date's week too.
   const weekDays = React.useMemo(() => {
-    const today = new Date();
-    const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - today.getDay() + 1); // Monday start
+    const anchor = parseIsoDateLocal(selectedDate);
+    const startOfWeek = new Date(anchor);
+    startOfWeek.setDate(anchor.getDate() - ((anchor.getDay() + 6) % 7)); // Monday start
 
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(startOfWeek);
       d.setDate(startOfWeek.getDate() + i);
+      const iso = toIsoDateLocal(d);
       return {
-        id: d.toISOString().split('T')[0],
+        id: iso,
         day: d.toLocaleDateString('en-US', { weekday: 'short' }),
         date: d.getDate().toString(),
-        isoDate: d.toISOString().split('T')[0],
+        isoDate: iso,
       };
     });
-  }, []);
+  }, [selectedDate]);
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <View>
           <Text style={styles.monthLabel}>
-            {new Date(selectedDate).toLocaleDateString('en-US', {
+            {parseIsoDateLocal(selectedDate).toLocaleDateString('en-US', {
               month: 'long',
               year: 'numeric',
             }).toUpperCase()}
@@ -110,8 +154,11 @@ export default function TrainerDashboard() {
           <TouchableOpacity style={styles.iconButton}>
             <Ionicons name="notifications-outline" size={20} color="#111" />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconButton}>
-            <Ionicons name="ellipsis-horizontal" size={20} color="#111" />
+          <TouchableOpacity
+            style={styles.iconButton}
+            onPress={() => setCalendarVisible(true)}
+          >
+            <Ionicons name="calendar-outline" size={20} color="#111" />
           </TouchableOpacity>
         </View>
       </View>
@@ -193,10 +240,20 @@ export default function TrainerDashboard() {
       <TouchableOpacity
         style={styles.fab}
         activeOpacity={0.85}
-        onPress={() => router.push('/session/new')}
+        onPress={() => router.push({ pathname: '/session/new', params: { date: selectedDate } })}
       >
         <Ionicons name="add" size={28} color="#FFF" />
       </TouchableOpacity>
+
+      <MonthCalendarModal
+        visible={calendarVisible}
+        onClose={() => setCalendarVisible(false)}
+        selectedDate={selectedDate}
+        onSelectDate={setSelectedDate}
+        markedDates={markedDates}
+        onMonthChange={fetchMarkedDatesForMonth}
+        title="Jump to a Date"
+      />
     </SafeAreaView>
   );
 }

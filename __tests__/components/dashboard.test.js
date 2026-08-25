@@ -9,6 +9,7 @@ jest.mock('expo-linear-gradient', () => {
 
 jest.mock('expo-router', () => ({
   useRouter: () => ({ push: jest.fn() }),
+  useFocusEffect: (effect) => require('react').useEffect(effect, []),
 }))
 
 const MOCK_SESSION = { user: { id: 'mock-trainer-id' } }
