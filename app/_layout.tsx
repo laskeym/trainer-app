@@ -79,6 +79,16 @@ function RootLayoutNav() {
         <Stack.Protected guard={!!session}>
           <Stack.Screen name="clients/[id]/index" options={{ headerShown: false }} />
         </Stack.Protected>
+        <Stack.Protected guard={!!session}>
+          <Stack.Screen
+            name="session/new"
+            options={{
+              presentation: 'modal',
+              title: 'Schedule Session',
+              headerShown: false
+            }}
+          />
+        </Stack.Protected>
       </Stack>
     </ThemeProvider>
   );
