@@ -36,6 +36,21 @@ export default function TabLayout() {
         }}
       />
 
+      {/* Templates Library Tab */}
+      <Tabs.Screen
+        name="templates"
+        options={{
+          title: 'Templates',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? "barbell" : "barbell-outline"}
+              size={22}
+              color={color}
+            />
+          ),
+        }}
+      />
+
       {/* Clients Management Tab */}
       <Tabs.Screen
         name="clients"
