@@ -80,3 +80,54 @@ export async function createWorkoutSession(input: CreateWorkoutSessionInput) {
 
   return { data, error };
 }
+
+/**
+ * Full detail read for a single scheduled workout session. The trainerId
+ * predicate is intentional even though RLS also protects the row: it keeps
+ * this function's ownership contract explicit and prevents callers from
+ * accidentally treating another trainer's session as a valid route target.
+ *
+ * Phase 1 renders the assigned template directly. We deliberately do not
+ * create session_exercise rows here yet; Phase 2 will define the snapshot and
+ * workout-execution lifecycle so opening a session remains a read-only action.
+ */
+export async function getWorkoutSessionDetails(trainerId: string, sessionId: string) {
+  const { data, error } = await supabase
+    .from('workout_session')
+    .select(`
+      id,
+      status,
+      scheduled_start,
+      scheduled_end,
+      location,
+      client:client_id ( id, name ),
+      day_type_template:day_type_template_id (
+        id,
+        name,
+        template_exercise (
+          id,
+          order,
+          target_sets,
+          target_reps,
+          exercise:exercise_id ( id, name, muscle_group, equipment )
+        )
+      )
+    `)
+    .eq('id', sessionId)
+    .eq('trainer_id', trainerId)
+    .single();
+
+  if (error) return { data: null, error };
+
+  const sortedExercises = (data.day_type_template?.template_exercise ?? [])
+    .slice()
+    .sort((a: any, b: any) => a.order - b.order);
+
+  return {
+    data: {
+      ...data,
+      exercises: sortedExercises,
+    },
+    error: null,
+  };
+}

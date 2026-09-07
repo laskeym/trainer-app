@@ -93,6 +93,9 @@ function RootLayoutNav() {
           />
         </Stack.Protected>
         <Stack.Protected guard={!!session}>
+          <Stack.Screen name="session/[id]" options={{ headerShown: false }} />
+        </Stack.Protected>
+        <Stack.Protected guard={!!session}>
           <Stack.Screen
             name="templates/new"
             options={{
