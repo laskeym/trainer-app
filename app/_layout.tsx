@@ -1,4 +1,5 @@
 import { SafeAreaProvider } from 'react-native-safe-area-context'
+import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { AuthProvider } from '../lib/AuthContext'
 
 import { useFonts } from 'expo-font';
@@ -39,11 +40,13 @@ export default function RootLayout() {
   }
 
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <RootLayoutNav />
-      </AuthProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <RootLayoutNav />
+        </AuthProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -88,6 +91,19 @@ function RootLayoutNav() {
               headerShown: false
             }}
           />
+        </Stack.Protected>
+        <Stack.Protected guard={!!session}>
+          <Stack.Screen
+            name="templates/new"
+            options={{
+              presentation: 'modal',
+              title: 'New Template',
+              headerShown: false
+            }}
+          />
+        </Stack.Protected>
+        <Stack.Protected guard={!!session}>
+          <Stack.Screen name="templates/[id]/index" options={{ headerShown: false }} />
         </Stack.Protected>
       </Stack>
     </ThemeProvider>

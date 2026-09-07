@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import mockAsyncStorage from '@react-native-async-storage/async-storage/jest/async-storage-mock'
+import 'react-native-gesture-handler/jestSetup'
 
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
