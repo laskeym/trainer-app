@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useAuth } from '../../lib/AuthContext';
-import { getWorkoutSessionDetails, ensureSessionExercises, getSessionExercises } from '../../lib/queries/sessions';
+import { getWorkoutSessionDetails } from '../../lib/queries/sessions';
 
 type SessionExercise = {
   id: string;
@@ -77,10 +77,6 @@ export default function SessionDetailScreen() {
   const [details, setDetails] = useState<SessionDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Maps exercise_id -> session_exercise.id once the SessionExercise
-  // snapshot is materialized, so tapping an exercise card knows which real
-  // row to send the trainer to log sets against (see ensureSessionExercises).
-  const [sessionExerciseMap, setSessionExerciseMap] = useState<Record<string, string>>({});
 
   const loadSession = useCallback(async () => {
     if (!session || !id) {
@@ -102,20 +98,6 @@ export default function SessionDetailScreen() {
       setDetails(null);
     } else {
       setDetails(data as SessionDetails);
-
-      // Materialize (once) the real SessionExercise rows this session needs
-      // for set logging / live editing, then map exercise_id -> its row id
-      // so exercise cards below know where to navigate on tap. A failure
-      // here shouldn't block viewing the plan — it just means tapping an
-      // exercise won't navigate yet, which is handled gracefully below.
-      const templateId = (data as SessionDetails).day_type_template?.id ?? null;
-      await ensureSessionExercises(id, templateId);
-      const { data: sessionExercises } = await getSessionExercises(id);
-      const map: Record<string, string> = {};
-      (sessionExercises ?? []).forEach((se: any) => {
-        if (se.exercise?.id) map[se.exercise.id] = se.id;
-      });
-      setSessionExerciseMap(map);
     }
 
     setLoading(false);
@@ -242,46 +224,29 @@ export default function SessionDetailScreen() {
           </View>
         ) : (
           <View style={styles.exerciseList}>
-            {details.exercises.map((item, index) => {
-              const sessionExerciseId = item.exercise?.id ? sessionExerciseMap[item.exercise.id] : undefined;
-              return (
-                <TouchableOpacity
-                  key={item.id}
-                  style={styles.exerciseCard}
-                  activeOpacity={0.7}
-                  disabled={!sessionExerciseId}
-                  testID={`exercise-card-${item.id}`}
-                  onPress={() => {
-                    if (!sessionExerciseId) return;
-                    router.push({
-                      pathname: `/session/${details.id}/exercise/${sessionExerciseId}`,
-                      params: {
-                        exerciseName: item.exercise?.name ?? 'Exercise',
-                        targetSets: item.target_sets != null ? String(item.target_sets) : '',
-                        targetReps: item.target_reps != null ? String(item.target_reps) : '',
-                        clientId: details.client?.id ?? '',
-                        exerciseId: item.exercise?.id ?? '',
-                      },
-                    });
-                  }}
-                >
-                  <View style={styles.exerciseNumber}>
-                    <Text style={styles.exerciseNumberText}>{index + 1}</Text>
-                  </View>
-                  <View style={styles.exerciseInfo}>
-                    <Text style={styles.exerciseName}>{item.exercise?.name ?? 'Exercise'}</Text>
-                    {item.exercise?.muscle_group ? (
-                      <Text style={styles.exerciseMeta}>{item.exercise.muscle_group}</Text>
-                    ) : null}
-                    <Text style={styles.exerciseTarget}>{formatTarget(item)}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
-                </TouchableOpacity>
-              );
-            })}
+            {details.exercises.map((item, index) => (
+              <View key={item.id} style={styles.exerciseCard}>
+                <View style={styles.exerciseNumber}>
+                  <Text style={styles.exerciseNumberText}>{index + 1}</Text>
+                </View>
+                <View style={styles.exerciseInfo}>
+                  <Text style={styles.exerciseName}>{item.exercise?.name ?? 'Exercise'}</Text>
+                  {item.exercise?.muscle_group ? (
+                    <Text style={styles.exerciseMeta}>{item.exercise.muscle_group}</Text>
+                  ) : null}
+                  <Text style={styles.exerciseTarget}>{formatTarget(item)}</Text>
+                </View>
+              </View>
+            ))}
           </View>
         )}
 
+        <View style={styles.phaseNote}>
+          <Ionicons name="information-circle-outline" size={18} color="#636366" />
+          <Text style={styles.phaseNoteText}>
+            Workout execution and set logging will be added in the next phase.
+          </Text>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
