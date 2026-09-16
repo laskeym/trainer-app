@@ -1,12 +1,16 @@
 import React from 'react';
-import { render } from '@testing-library/react-native';
+import { render, fireEvent } from '@testing-library/react-native';
 import SessionDetailScreen from '../../app/session/[id]';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useAuth } from '../../lib/AuthContext';
-import { getWorkoutSessionDetails } from '../../lib/queries/sessions';
+import {
+  getWorkoutSessionDetails,
+  ensureSessionExercises,
+  getSessionExercises,
+} from '../../lib/queries/sessions';
 
 jest.mock('expo-router', () => ({
-  useRouter: jest.fn(() => ({ back: jest.fn() })),
+  useRouter: jest.fn(() => ({ back: jest.fn(), push: jest.fn() })),
   useLocalSearchParams: jest.fn(() => ({ id: 'session-1' })),
 }));
 
@@ -16,6 +20,8 @@ jest.mock('../../lib/AuthContext', () => ({
 
 jest.mock('../../lib/queries/sessions', () => ({
   getWorkoutSessionDetails: jest.fn(),
+  ensureSessionExercises: jest.fn(),
+  getSessionExercises: jest.fn(),
 }));
 
 const SESSION = {
@@ -42,6 +48,11 @@ describe('Session Detail Screen', () => {
     useAuth.mockReturnValue({ session: { user: { id: 'trainer-1' } } });
     useLocalSearchParams.mockReturnValue({ id: 'session-1' });
     getWorkoutSessionDetails.mockResolvedValue({ data: SESSION, error: null });
+    ensureSessionExercises.mockResolvedValue({ error: null });
+    getSessionExercises.mockResolvedValue({
+      data: [{ id: 'session-exercise-1', order: 0, exercise: { id: 'exercise-1', name: 'Back Squat' } }],
+      error: null,
+    });
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -64,5 +75,32 @@ describe('Session Detail Screen', () => {
 
     const { findByText } = await render(<SessionDetailScreen />);
     expect(await findByText('No workout template assigned')).toBeTruthy();
+  });
+
+  it('materializes the SessionExercise snapshot for the assigned template', async () => {
+    await render(<SessionDetailScreen />);
+
+    expect(ensureSessionExercises).toHaveBeenCalledWith('session-1', 'template-1');
+  });
+
+  it('navigates to the set-logging screen with target info when an exercise is tapped', async () => {
+    const mockPush = jest.fn();
+    useRouter.mockReturnValue({ back: jest.fn(), push: mockPush });
+
+    const { findByTestId } = await render(<SessionDetailScreen />);
+
+    const exerciseCard = await findByTestId('exercise-card-template-exercise-1');
+    fireEvent.press(exerciseCard);
+
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/session/session-1/exercise/session-exercise-1',
+      params: {
+        exerciseName: 'Back Squat',
+        targetSets: '3',
+        targetReps: '10',
+        clientId: 'client-1',
+        exerciseId: 'exercise-1',
+      },
+    });
   });
 });

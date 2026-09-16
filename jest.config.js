@@ -15,6 +15,7 @@ module.exports = {
       transform: {
         '^.+\\.(js|jsx|ts|tsx)$': 'babel-jest',
       },
+      setupFiles: ['dotenv/config'],
       testMatch: ['<rootDir>/__tests__/integration/**/*.test.js'],
     },
   ],
