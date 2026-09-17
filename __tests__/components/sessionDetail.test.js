@@ -115,15 +115,43 @@ describe('Session Detail Screen', () => {
     });
   });
 
-  it('shows the actual logged sets instead of the target once logging has started', async () => {
+  it('counts only confirmed (checkmarked) sets toward X, not merely filled-in ones', async () => {
+    // Regression test for the exact bug reported: every row has a typed
+    // value (autosaved on blur), but only one has actually been confirmed
+    // via the checkmark. The display must reflect confirmations, not typing.
     getSetLogSummariesForSession.mockResolvedValue({
       data: [
         {
           id: 'session-exercise-1',
           exercise_id: 'exercise-1',
           set_log: [
-            { set_number: 1, weight: 135, reps: 10 },
-            { set_number: 2, weight: 140, reps: 8 },
+            { set_number: 1, weight: 135, reps: 10, completed: true },
+            { set_number: 2, weight: 140, reps: 8, completed: false },
+            { set_number: 3, weight: 145, reps: 6, completed: false },
+            { set_number: 4, weight: 150, reps: 5, completed: false },
+            { set_number: 5, weight: 155, reps: 4, completed: false },
+          ],
+        },
+      ],
+      error: null,
+    });
+
+    const { findByText, queryByText } = await render(<SessionDetailScreen />);
+
+    expect(await findByText('1/5 sets logged \u00b7 135x10')).toBeTruthy();
+    expect(queryByText('5/5 sets logged')).toBeNull();
+  });
+
+  it('shows partial progress (out of the live row count) once some sets are confirmed', async () => {
+    getSetLogSummariesForSession.mockResolvedValue({
+      data: [
+        {
+          id: 'session-exercise-1',
+          exercise_id: 'exercise-1',
+          set_log: [
+            { set_number: 1, weight: 135, reps: 10, completed: true },
+            { set_number: 2, weight: 140, reps: 8, completed: true },
+            { set_number: 3, weight: null, reps: null, completed: false },
           ],
         },
       ],
@@ -134,6 +162,75 @@ describe('Session Detail Screen', () => {
 
     expect(await findByText('2/3 sets logged \u00b7 135x10, 140x8')).toBeTruthy();
     expect(queryByText('3 sets × 10 reps')).toBeNull();
+    expect(queryByText('Exercise Complete')).toBeNull();
+  });
+
+  it('shows in-progress activity even before anything is confirmed, rather than silently showing the target', async () => {
+    getSetLogSummariesForSession.mockResolvedValue({
+      data: [
+        {
+          id: 'session-exercise-1',
+          exercise_id: 'exercise-1',
+          set_log: [
+            { set_number: 1, weight: 135, reps: 10, completed: false },
+            { set_number: 2, weight: null, reps: null, completed: false },
+            { set_number: 3, weight: null, reps: null, completed: false },
+          ],
+        },
+      ],
+      error: null,
+    });
+
+    const { findByText, queryByText } = await render(<SessionDetailScreen />);
+
+    // Nothing confirmed yet, but there's a typed value — show 0/3, not the
+    // template's static target, and no confirmed-set numbers in the summary.
+    expect(await findByText('0/3 sets logged')).toBeTruthy();
+    expect(queryByText('3 sets × 10 reps')).toBeNull();
+  });
+
+  it('shows an Exercise Complete badge once every set for that exercise is confirmed', async () => {
+    getSetLogSummariesForSession.mockResolvedValue({
+      data: [
+        {
+          id: 'session-exercise-1',
+          exercise_id: 'exercise-1',
+          set_log: [
+            { set_number: 1, weight: 135, reps: 10, completed: true },
+            { set_number: 2, weight: 140, reps: 8, completed: true },
+            { set_number: 3, weight: 145, reps: 6, completed: true },
+          ],
+        },
+      ],
+      error: null,
+    });
+
+    const { findByText } = await render(<SessionDetailScreen />);
+
+    expect(await findByText('3/3 sets logged \u00b7 135x10, 140x8, 145x6')).toBeTruthy();
+    expect(await findByText('Exercise Complete')).toBeTruthy();
+  });
+
+  it('falls back to the template target when nothing has happened yet', async () => {
+    getSetLogSummariesForSession.mockResolvedValue({
+      data: [
+        {
+          id: 'session-exercise-1',
+          exercise_id: 'exercise-1',
+          set_log: [
+            { set_number: 1, weight: null, reps: null, completed: false },
+            { set_number: 2, weight: null, reps: null, completed: false },
+            { set_number: 3, weight: null, reps: null, completed: false },
+          ],
+        },
+      ],
+      error: null,
+    });
+
+    const { findByText } = await render(<SessionDetailScreen />);
+
+    // Still falls back to the template's target, not "0/3 sets logged"
+    expect(await findByText('3 sets × 10 reps')).toBeTruthy();
   });
 
   it('shows a Start Workout button for a planned session, and starts it on tap', async () => {

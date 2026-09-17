@@ -78,23 +78,38 @@ function formatTarget(item: SessionExercise) {
 }
 
 type ExerciseProgress = {
-  loggedCount: number;
+  completedCount: number;
+  totalCount: number;
+  hasAnyActivity: boolean;
+  allCompleted: boolean;
   summaryText: string | null;
 };
 
 /**
- * Once the trainer has logged at least one set this session, show what
- * actually happened instead of the template's static target — a target
- * that never changes no matter what the trainer records is misleading once
- * real numbers exist. Falls back to formatTarget when nothing's logged yet.
+ * Once the trainer has recorded any activity on this exercise this
+ * session, show what's really happened instead of the template's static
+ * target — a target that never changes no matter what the trainer records
+ * is misleading once real numbers exist. Falls back to formatTarget only
+ * when nothing at all has happened yet (a session's sets exist as blank
+ * rows from the moment its exercise screen is first opened, so a plain row
+ * count alone isn't enough to tell "nothing logged" from "in progress").
+ *
+ * X is how many sets the trainer has actually confirmed complete (tapped
+ * the checkmark on) — not how many rows merely have a value typed in.
+ * Autosave persists in-progress typing the moment a field loses focus (see
+ * the set-logging screen), so "has a value" would count sets the trainer
+ * never actually confirmed, which doesn't match what "complete" means
+ * anywhere else in the app.
+ *
+ * The denominator is the exercise's live SetLog row count for THIS
+ * session, not the template's target_sets — a trainer can add or remove
+ * sets per session independently of the template now, so that's the more
+ * accurate "out of how many" figure.
  */
 function formatProgress(item: SessionExercise, progress: ExerciseProgress | undefined) {
-  if (!progress || progress.loggedCount === 0) return formatTarget(item);
+  if (!progress || !progress.hasAnyActivity) return formatTarget(item);
 
-  const totalLabel = item.target_sets != null ? `${progress.loggedCount}/${item.target_sets}` : `${progress.loggedCount}`;
-  const setWord = progress.loggedCount === 1 && item.target_sets == null ? 'set' : 'sets';
-  const base = `${totalLabel} ${setWord} logged`;
-
+  const base = `${progress.completedCount}/${progress.totalCount} sets logged`;
   return progress.summaryText ? `${base} \u00b7 ${progress.summaryText}` : base;
 }
 
@@ -162,7 +177,18 @@ export default function SessionDetailScreen() {
       (summaries ?? []).forEach((se: any) => {
         const logs = (se.set_log ?? []).slice().sort((a: any, b: any) => a.set_number - b.set_number);
         if (logs.length === 0) return;
-        const summaryText = logs
+
+        // "Any activity" (the fallback trigger) is broader than "completed"
+        // — a row with a typed-but-unconfirmed value still counts as
+        // activity worth showing, even though it doesn't count toward X.
+        const filledLogs = logs.filter((log: any) => log.weight != null || log.reps != null);
+        const completedLogs = logs.filter((log: any) => log.completed);
+        if (filledLogs.length === 0 && completedLogs.length === 0) return;
+
+        // Only confirmed sets appear in the detail text — showing an
+        // unconfirmed value next to a count that only counts confirmed
+        // sets would be its own source of confusion.
+        const summaryText = completedLogs
           .map((log: any) => {
             if (log.weight != null && log.reps != null) return `${log.weight}x${log.reps}`;
             if (log.weight != null) return `${log.weight} lbs`;
@@ -171,7 +197,14 @@ export default function SessionDetailScreen() {
           })
           .filter(Boolean)
           .join(', ');
-        progress[se.exercise_id] = { loggedCount: logs.length, summaryText: summaryText || null };
+
+        progress[se.exercise_id] = {
+          completedCount: completedLogs.length,
+          totalCount: logs.length,
+          hasAnyActivity: true,
+          allCompleted: logs.every((log: any) => log.completed),
+          summaryText: summaryText || null,
+        };
       });
       setProgressMap(progress);
     }
@@ -359,6 +392,7 @@ export default function SessionDetailScreen() {
           <View style={styles.exerciseList}>
             {details.exercises.map((item, index) => {
               const sessionExerciseId = item.exercise?.id ? sessionExerciseMap[item.exercise.id] : undefined;
+              const progress = item.exercise?.id ? progressMap[item.exercise.id] : undefined;
               return (
                 <TouchableOpacity
                   key={item.id}
@@ -381,8 +415,12 @@ export default function SessionDetailScreen() {
                     });
                   }}
                 >
-                  <View style={styles.exerciseNumber}>
-                    <Text style={styles.exerciseNumberText}>{index + 1}</Text>
+                  <View style={[styles.exerciseNumber, progress?.allCompleted && styles.exerciseNumberComplete]}>
+                    {progress?.allCompleted ? (
+                      <Ionicons name="checkmark" size={16} color="#FFF" />
+                    ) : (
+                      <Text style={styles.exerciseNumberText}>{index + 1}</Text>
+                    )}
                   </View>
                   <View style={styles.exerciseInfo}>
                     <Text style={styles.exerciseName}>{item.exercise?.name ?? 'Exercise'}</Text>
@@ -390,8 +428,14 @@ export default function SessionDetailScreen() {
                       <Text style={styles.exerciseMeta}>{item.exercise.muscle_group}</Text>
                     ) : null}
                     <Text style={styles.exerciseTarget}>
-                      {formatProgress(item, item.exercise?.id ? progressMap[item.exercise.id] : undefined)}
+                      {formatProgress(item, progress)}
                     </Text>
+                    {progress?.allCompleted && (
+                      <View style={styles.exerciseCompletePill} testID={`exercise-complete-${item.id}`}>
+                        <Ionicons name="checkmark-circle" size={12} color="#1D7A34" />
+                        <Text style={styles.exerciseCompletePillText}>Exercise Complete</Text>
+                      </View>
+                    )}
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
                 </TouchableOpacity>
@@ -484,6 +528,19 @@ const styles = StyleSheet.create({
   exerciseName: { fontSize: 16, fontWeight: '700', color: '#1C1C1E' },
   exerciseMeta: { fontSize: 13, color: '#8E8E93', marginTop: 2, textTransform: 'capitalize' },
   exerciseTarget: { fontSize: 13, color: '#636366', marginTop: 6 },
+  exerciseNumberComplete: { backgroundColor: '#34C759' },
+  exerciseCompletePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    backgroundColor: '#D8F5DE',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginTop: 6,
+  },
+  exerciseCompletePillText: { fontSize: 11, fontWeight: '700', color: '#1D7A34' },
   emptyPlan: {
     backgroundColor: '#FFF',
     borderRadius: 20,
