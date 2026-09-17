@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, fireEvent, act } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import SetLoggingScreen from '../../app/session/[id]/exercise/[sessionExerciseId]';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import {
@@ -8,6 +9,7 @@ import {
   deleteSetLog,
   getLastLoggedSets,
 } from '../../lib/queries/setLogs';
+import { updateWorkoutSessionStatus } from '../../lib/queries/sessions';
 
 jest.mock('expo-router', () => ({
   useRouter: jest.fn(() => ({ back: jest.fn() })),
@@ -19,6 +21,7 @@ jest.mock('expo-router', () => ({
     targetReps: '10',
     clientId: 'client-1',
     exerciseId: 'exercise-1',
+    sessionStatus: 'in_progress',
   })),
 }));
 
@@ -29,10 +32,15 @@ jest.mock('../../lib/queries/setLogs', () => ({
   getLastLoggedSets: jest.fn(),
 }));
 
+jest.mock('../../lib/queries/sessions', () => ({
+  updateWorkoutSessionStatus: jest.fn(),
+}));
+
 describe('Set Logging Screen', () => {
   beforeEach(() => {
     getSetLogsForSessionExercise.mockResolvedValue({ data: [], error: null });
     getLastLoggedSets.mockResolvedValue({ data: [], error: null });
+    updateWorkoutSessionStatus.mockResolvedValue({ data: { id: 'session-1', status: 'in_progress' }, error: null });
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -68,7 +76,7 @@ describe('Set Logging Screen', () => {
     expect(await findByText('No previous session for this exercise yet')).toBeTruthy();
   });
 
-  it('loads previously logged sets instead of empty rows when they exist', async () => {
+  it('loads previously logged sets and shows them as already complete', async () => {
     getSetLogsForSessionExercise.mockResolvedValue({
       data: [{ id: 'log-1', set_number: 1, weight: 135, reps: 12 }],
       error: null,
@@ -76,16 +84,17 @@ describe('Set Logging Screen', () => {
 
     const { findByTestId } = await render(<SetLoggingScreen />);
 
-    const row = await findByTestId('set-row-1');
-    expect(row).toBeTruthy();
-    // Already-saved sets show a remove (trash) action, not a log (checkmark) one
+    expect(await findByTestId('set-row-1')).toBeTruthy();
+    // A saved set always shows both the complete toggle and a remove action —
+    // the checkmark no longer morphs away once logged.
+    expect(await findByTestId('complete-set-1')).toBeTruthy();
     expect(await findByTestId('remove-set-1')).toBeTruthy();
   });
 
-  it('logs a set and starts the rest timer', async () => {
+  it('logs a set, marks it complete, and does not start a rest timer', async () => {
     upsertSetLog.mockResolvedValue({ data: { id: 'log-9' }, error: null });
 
-    const { findByTestId } = await render(<SetLoggingScreen />);
+    const { findByTestId, queryByTestId } = await render(<SetLoggingScreen />);
 
     const weightInput = await findByTestId('weight-input-1');
     const repsInput = await findByTestId('reps-input-1');
@@ -99,9 +108,9 @@ describe('Set Logging Screen', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    const logButton = await findByTestId('log-set-1');
+    const completeButton = await findByTestId('complete-set-1');
     await act(async () => {
-      fireEvent.press(logButton);
+      fireEvent.press(completeButton);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
@@ -111,7 +120,55 @@ describe('Set Logging Screen', () => {
       weight: 135,
       reps: 10,
     });
-    expect(await findByTestId('rest-timer-banner')).toBeTruthy();
+    // The checkmark's job is marking the set done — it should never trigger
+    // a rest timer as a side effect (that caused accidental taps before).
+    expect(queryByTestId('rest-timer-banner')).toBeNull();
+  });
+
+  it('un-marks a completed set locally without deleting it when tapped again', async () => {
+    getSetLogsForSessionExercise.mockResolvedValue({
+      data: [{ id: 'log-1', set_number: 1, weight: 135, reps: 12 }],
+      error: null,
+    });
+
+    const { findByTestId } = await render(<SetLoggingScreen />);
+
+    const completeButton = await findByTestId('complete-set-1');
+    fireEvent.press(completeButton);
+
+    // Un-marking is a local-only toggle — no delete call, no data loss.
+    expect(deleteSetLog).not.toHaveBeenCalled();
+    expect(upsertSetLog).not.toHaveBeenCalled();
+  });
+
+  it('auto-starts the session on the first set logged if it was still planned', async () => {
+    useLocalSearchParams.mockReturnValue({
+      id: 'session-1',
+      sessionExerciseId: 'session-exercise-1',
+      exerciseName: 'Back Squat',
+      targetSets: '3',
+      targetReps: '10',
+      clientId: 'client-1',
+      exerciseId: 'exercise-1',
+      sessionStatus: 'planned',
+    });
+    upsertSetLog.mockResolvedValue({ data: { id: 'log-9' }, error: null });
+
+    const { findByTestId } = await render(<SetLoggingScreen />);
+
+    const weightInput = await findByTestId('weight-input-1');
+    await act(async () => {
+      fireEvent.changeText(weightInput, '135');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const completeButton = await findByTestId('complete-set-1');
+    await act(async () => {
+      fireEvent.press(completeButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(updateWorkoutSessionStatus).toHaveBeenCalledWith('session-1', 'in_progress');
   });
 
   it('adds a new empty set row when Add Set is pressed', async () => {
@@ -125,7 +182,7 @@ describe('Set Logging Screen', () => {
     expect(await findByTestId('set-row-4')).toBeTruthy();
   });
 
-  it('removes a saved set and renumbers the remaining rows', async () => {
+  it('removes a saved set only after the confirmation alert is accepted', async () => {
     getSetLogsForSessionExercise.mockResolvedValue({
       data: [
         { id: 'log-1', set_number: 1, weight: 135, reps: 12 },
@@ -134,6 +191,13 @@ describe('Set Logging Screen', () => {
       error: null,
     });
     deleteSetLog.mockResolvedValue({ error: null });
+
+    // Alert.alert doesn't invoke callbacks in the RN test environment, so
+    // simulate the trainer tapping the destructive 'Delete' button.
+    jest.spyOn(Alert, 'alert').mockImplementation((title, message, buttons) => {
+      const deleteButton = buttons.find((b) => b.text === 'Delete');
+      deleteButton?.onPress?.();
+    });
 
     const { findByTestId, queryByTestId } = await render(<SetLoggingScreen />);
 
@@ -148,6 +212,21 @@ describe('Set Logging Screen', () => {
     // What was set 2 should now be renumbered to set 1
     expect(await findByTestId('set-row-1')).toBeTruthy();
     expect(queryByTestId('set-row-2')).toBeNull();
+  });
+
+  it('removes an unsaved empty row immediately, with no confirmation needed', async () => {
+    const { findByTestId, queryByTestId } = await render(<SetLoggingScreen />);
+
+    // Row 3 is an empty, never-logged row from the default 3-set pre-fill.
+    const removeThirdButton = await findByTestId('remove-set-3');
+
+    await act(async () => {
+      fireEvent.press(removeThirdButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(deleteSetLog).not.toHaveBeenCalled();
+    expect(queryByTestId('set-row-3')).toBeNull();
   });
 
   it('starts the rest timer directly from a preset button', async () => {

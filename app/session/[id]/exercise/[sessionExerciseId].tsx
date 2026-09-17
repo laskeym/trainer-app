@@ -21,6 +21,7 @@ import {
   deleteSetLog,
   getLastLoggedSets,
 } from '../../../../lib/queries/setLogs';
+import { updateWorkoutSessionStatus } from '../../../../lib/queries/sessions';
 
 type SetRow = {
   // A real id once the trainer has saved this set at least once; null for
@@ -48,7 +49,7 @@ function formatLastTimeSets(sets: { set_number: number; weight: number | null; r
 
 export default function SetLoggingScreen() {
   const router = useRouter();
-  const { id, sessionExerciseId, exerciseName, targetSets, targetReps, clientId, exerciseId } =
+  const { id, sessionExerciseId, exerciseName, targetSets, targetReps, clientId, exerciseId, sessionStatus } =
     useLocalSearchParams<{
       id: string;
       sessionExerciseId: string;
@@ -57,7 +58,14 @@ export default function SetLoggingScreen() {
       targetReps?: string;
       clientId?: string;
       exerciseId?: string;
+      sessionStatus?: string;
     }>();
+
+  // Tracks the session's status locally so we only fire the auto-transition
+  // (planned -> in_progress) once per screen visit, even if the trainer logs
+  // several sets in a row — updateWorkoutSessionStatus is a real write, not
+  // something to call on every single set.
+  const hasStartedSessionRef = useRef(sessionStatus !== 'planned');
 
   const [loading, setLoading] = useState(true);
   const [sets, setSets] = useState<SetRow[]>([]);
@@ -166,12 +174,43 @@ export default function SetLoggingScreen() {
         return next;
       });
 
-      // Rest timer kicks in right after a set is logged — that's the actual
-      // moment the trainer needs it, between this set and the next.
-      startRestTimer(REST_PRESETS_SECONDS[0]);
+      // The checkmark's only job is marking this set complete — starting a
+      // rest timer as a side effect of that made it too easy to trigger by
+      // accident. The rest-timer presets below remain the deliberate way to
+      // start one.
+
+      // First set logged this session bumps status out of 'planned'
+      // automatically — the trainer clearly started the workout, no need to
+      // make them tap a separate "Start Workout" button first. Fire-and-log
+      // rather than await+block the UI on it; a failure here shouldn't stop
+      // the set itself from being logged.
+      if (!hasStartedSessionRef.current) {
+        hasStartedSessionRef.current = true;
+        updateWorkoutSessionStatus(id, 'in_progress').then(({ error: statusError }) => {
+          if (statusError) console.error('❌ Failed to auto-start session:', statusError.message);
+        });
+      }
     } catch (err: any) {
       console.error('❌ Failed to log set:', err.message);
       Alert.alert('Log Failed', err.message || 'An unexpected server issue occurred.');
+    }
+  };
+
+  // Tapping an already-completed set's checkmark un-marks it locally (back
+  // to editable/incomplete) without touching the saved DB row — lets the
+  // trainer quickly reopen a set to tweak it, then re-tap to confirm again.
+  // Actually deleting a set's data is a separate, explicitly-confirmed
+  // action (see handleRemoveSet) so it can't happen from a single mis-tap.
+  const handleToggleComplete = (index: number) => {
+    const row = sets[index];
+    if (row.saved) {
+      setSets((prev) => {
+        const next = [...prev];
+        next[index] = { ...next[index], saved: false };
+        return next;
+      });
+    } else {
+      handleLogSet(index);
     }
   };
 
@@ -182,7 +221,7 @@ export default function SetLoggingScreen() {
     ]);
   };
 
-  const handleRemoveSet = async (index: number) => {
+  const handleRemoveSet = (index: number) => {
     const row = sets[index];
 
     const removeLocally = () => {
@@ -193,19 +232,31 @@ export default function SetLoggingScreen() {
       });
     };
 
+    // An unsaved (never-logged) row has nothing to lose — remove it
+    // immediately, same as removing an empty form field. Only a row with
+    // real logged data needs the confirmation step.
     if (!row.id) {
       removeLocally();
       return;
     }
 
-    try {
-      const { error } = await deleteSetLog(row.id);
-      if (error) throw error;
-      removeLocally();
-    } catch (err: any) {
-      console.error('❌ Failed to remove set:', err.message);
-      Alert.alert('Remove Failed', err.message || 'An unexpected server issue occurred.');
-    }
+    Alert.alert('Remove Set', `Delete set ${row.setNumber}? This can't be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const { error } = await deleteSetLog(row.id as string);
+            if (error) throw error;
+            removeLocally();
+          } catch (err: any) {
+            console.error('❌ Failed to remove set:', err.message);
+            Alert.alert('Remove Failed', err.message || 'An unexpected server issue occurred.');
+          }
+        },
+      },
+    ]);
   };
 
   const targetLabel =
@@ -269,7 +320,7 @@ export default function SetLoggingScreen() {
             <Text style={[styles.setsHeaderCell, styles.setNumberCol]}>SET</Text>
             <Text style={[styles.setsHeaderCell, styles.weightCol]}>WEIGHT</Text>
             <Text style={[styles.setsHeaderCell, styles.repsCol]}>REPS</Text>
-            <View style={styles.actionCol} />
+            <View style={styles.actionColHeader} />
           </View>
 
           {sets.map((row, index) => (
@@ -293,25 +344,20 @@ export default function SetLoggingScreen() {
                 onChangeText={(v) => handleChangeField(index, 'reps', v)}
                 testID={`reps-input-${row.setNumber}`}
               />
-              <View style={styles.actionCol}>
-                {row.saved ? (
-                  <TouchableOpacity
-                    onPress={() => handleRemoveSet(index)}
-                    style={styles.removeSetButton}
-                    testID={`remove-set-${row.setNumber}`}
-                  >
-                    <Ionicons name="trash-outline" size={16} color="#FF3B30" />
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity
-                    onPress={() => handleLogSet(index)}
-                    style={styles.logSetButton}
-                    testID={`log-set-${row.setNumber}`}
-                  >
-                    <Ionicons name="checkmark" size={16} color="#FFF" />
-                  </TouchableOpacity>
-                )}
-              </View>
+              <TouchableOpacity
+                onPress={() => handleToggleComplete(index)}
+                style={[styles.completeButton, row.saved && styles.completeButtonDone]}
+                testID={`complete-set-${row.setNumber}`}
+              >
+                <Ionicons name="checkmark" size={16} color={row.saved ? '#FFF' : '#8E8E93'} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => handleRemoveSet(index)}
+                style={styles.removeSetButton}
+                testID={`remove-set-${row.setNumber}`}
+              >
+                <Ionicons name="trash-outline" size={16} color="#FF3B30" />
+              </TouchableOpacity>
             </View>
           ))}
 
@@ -388,7 +434,7 @@ const styles = StyleSheet.create({
   setNumberCol: { width: 36 },
   weightCol: { flex: 1 },
   repsCol: { flex: 1 },
-  actionCol: { width: 40, alignItems: 'center' },
+  actionColHeader: { width: 68 },
   setNumberText: { fontSize: 15, fontWeight: '700', color: '#1C1C1E' },
   setInput: {
     backgroundColor: '#F2F2F7',
@@ -398,13 +444,19 @@ const styles = StyleSheet.create({
     color: '#1C1C1E',
     fontSize: 15,
   },
-  logSetButton: {
+  completeButton: {
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: '#1C1C1E',
+    backgroundColor: '#F2F2F7',
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  completeButtonDone: {
+    backgroundColor: '#34C759',
+    borderColor: '#34C759',
   },
   removeSetButton: {
     width: 30,

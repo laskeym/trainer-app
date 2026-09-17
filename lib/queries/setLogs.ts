@@ -66,6 +66,25 @@ export async function deleteSetLog(setLogId: string) {
 }
 
 /**
+ * Every SessionExercise in this session, each with its logged SetLog rows —
+ * used by the session detail screen to show actual performed sets ("2 of 3
+ * sets \u00b7 135x10, 140x8") once logging has started, instead of always
+ * showing the template's static target no matter what actually happened.
+ */
+export async function getSetLogSummariesForSession(sessionId: string) {
+  const { data, error } = await supabase
+    .from('session_exercise')
+    .select(`
+      id,
+      exercise_id,
+      set_log ( set_number, weight, reps )
+    `)
+    .eq('session_id', sessionId);
+
+  return { data, error };
+}
+
+/**
  * Finds this client's most recent OTHER session containing this exercise
  * (excluding the current session) and returns its logged sets, so the
  * set-logging screen can show a "last time: 175x8, 180x8, 185x6" reference.

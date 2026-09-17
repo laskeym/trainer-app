@@ -181,6 +181,26 @@ export async function ensureSessionExercises(sessionId: string, dayTypeTemplateI
   return { error: insertError };
 }
 
+export type WorkoutSessionStatus = 'planned' | 'in_progress' | 'completed';
+
+/**
+ * Moves a session along its planned -> in_progress -> completed lifecycle
+ * (or backward, e.g. "Reopen" after an accidental complete — see the status
+ * check constraint's own comment for why this isn't a one-way DB-enforced
+ * state machine). Returns the updated row so callers can sync local state
+ * without a second round trip.
+ */
+export async function updateWorkoutSessionStatus(sessionId: string, status: WorkoutSessionStatus) {
+  const { data, error } = await supabase
+    .from('workout_session')
+    .update({ status })
+    .eq('id', sessionId)
+    .select('id, status')
+    .single();
+
+  return { data, error };
+}
+
 /**
  * The session's actual SessionExercise rows (after ensureSessionExercises
  * has run), joined to their Exercise info. This is the live, per-session

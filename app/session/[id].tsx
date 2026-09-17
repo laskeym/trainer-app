@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,9 +10,16 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useAuth } from '../../lib/AuthContext';
-import { getWorkoutSessionDetails, ensureSessionExercises, getSessionExercises } from '../../lib/queries/sessions';
+import {
+  getWorkoutSessionDetails,
+  ensureSessionExercises,
+  getSessionExercises,
+  updateWorkoutSessionStatus,
+  WorkoutSessionStatus,
+} from '../../lib/queries/sessions';
+import { getSetLogSummariesForSession } from '../../lib/queries/setLogs';
 
 type SessionExercise = {
   id: string;
@@ -69,6 +77,33 @@ function formatTarget(item: SessionExercise) {
   return 'No target assigned';
 }
 
+type ExerciseProgress = {
+  loggedCount: number;
+  summaryText: string | null;
+};
+
+/**
+ * Once the trainer has logged at least one set this session, show what
+ * actually happened instead of the template's static target — a target
+ * that never changes no matter what the trainer records is misleading once
+ * real numbers exist. Falls back to formatTarget when nothing's logged yet.
+ */
+function formatProgress(item: SessionExercise, progress: ExerciseProgress | undefined) {
+  if (!progress || progress.loggedCount === 0) return formatTarget(item);
+
+  const totalLabel = item.target_sets != null ? `${progress.loggedCount}/${item.target_sets}` : `${progress.loggedCount}`;
+  const setWord = progress.loggedCount === 1 && item.target_sets == null ? 'set' : 'sets';
+  const base = `${totalLabel} ${setWord} logged`;
+
+  return progress.summaryText ? `${base} \u00b7 ${progress.summaryText}` : base;
+}
+
+const STATUS_STYLES: Record<string, { background: string; text: string }> = {
+  planned: { background: '#E5E5EA', text: '#3A3A3C' },
+  in_progress: { background: '#FFE8CC', text: '#B25E00' },
+  completed: { background: '#D8F5DE', text: '#1D7A34' },
+};
+
 export default function SessionDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -81,6 +116,11 @@ export default function SessionDetailScreen() {
   // snapshot is materialized, so tapping an exercise card knows which real
   // row to send the trainer to log sets against (see ensureSessionExercises).
   const [sessionExerciseMap, setSessionExerciseMap] = useState<Record<string, string>>({});
+  // Maps exercise_id -> what's actually been logged this session, so the
+  // exercise list can show real progress instead of the static template
+  // target once logging has started (see formatProgress).
+  const [progressMap, setProgressMap] = useState<Record<string, ExerciseProgress>>({});
+  const [statusUpdating, setStatusUpdating] = useState(false);
 
   const loadSession = useCallback(async () => {
     if (!session || !id) {
@@ -116,14 +156,40 @@ export default function SessionDetailScreen() {
         if (se.exercise?.id) map[se.exercise.id] = se.id;
       });
       setSessionExerciseMap(map);
+
+      const { data: summaries } = await getSetLogSummariesForSession(id);
+      const progress: Record<string, ExerciseProgress> = {};
+      (summaries ?? []).forEach((se: any) => {
+        const logs = (se.set_log ?? []).slice().sort((a: any, b: any) => a.set_number - b.set_number);
+        if (logs.length === 0) return;
+        const summaryText = logs
+          .map((log: any) => {
+            if (log.weight != null && log.reps != null) return `${log.weight}x${log.reps}`;
+            if (log.weight != null) return `${log.weight} lbs`;
+            if (log.reps != null) return `${log.reps} reps`;
+            return null;
+          })
+          .filter(Boolean)
+          .join(', ');
+        progress[se.exercise_id] = { loggedCount: logs.length, summaryText: summaryText || null };
+      });
+      setProgressMap(progress);
     }
 
     setLoading(false);
   }, [id, session]);
 
-  useEffect(() => {
-    loadSession();
-  }, [loadSession]);
+  // useFocusEffect (not a plain useEffect) so this refetches every time the
+  // screen regains focus — including when returning from the set-logging
+  // screen via router.back(). Stack screens stay mounted when another
+  // screen is pushed on top, so a plain mount-effect would keep showing
+  // stale progress/status after logging sets. Same fix already applied to
+  // the dashboard for the same reason.
+  useFocusEffect(
+    useCallback(() => {
+      loadSession();
+    }, [loadSession])
+  );
 
   if (loading) {
     return (
@@ -164,6 +230,22 @@ export default function SessionDetailScreen() {
 
   const hasTemplate = !!details.day_type_template;
 
+  const handleStatusChange = async (nextStatus: WorkoutSessionStatus) => {
+    setStatusUpdating(true);
+    try {
+      const { data, error } = await updateWorkoutSessionStatus(details.id, nextStatus);
+      if (error || !data) throw error ?? new Error('No response from server.');
+      setDetails((prev) => (prev ? { ...prev, status: data.status } : prev));
+    } catch (err: any) {
+      console.error('❌ Failed to update session status:', err.message);
+      Alert.alert('Update Failed', err.message || 'An unexpected server issue occurred.');
+    } finally {
+      setStatusUpdating(false);
+    }
+  };
+
+  const statusStyle = STATUS_STYLES[details.status] ?? STATUS_STYLES.planned;
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.navBar}>
@@ -180,8 +262,41 @@ export default function SessionDetailScreen() {
           <Text style={styles.templateName}>
             {details.day_type_template?.name ?? 'Workout Session'}
           </Text>
-          <View style={styles.statusPill}>
-            <Text style={styles.statusText}>{formatStatus(details.status)}</Text>
+          <View style={[styles.statusPill, { backgroundColor: statusStyle.background }]}>
+            <Text style={[styles.statusText, { color: statusStyle.text }]}>{formatStatus(details.status)}</Text>
+          </View>
+
+          <View style={styles.statusActions}>
+            {details.status === 'planned' && (
+              <TouchableOpacity
+                style={styles.primaryStatusButton}
+                onPress={() => handleStatusChange('in_progress')}
+                disabled={statusUpdating}
+                testID="start-workout-button"
+              >
+                <Text style={styles.primaryStatusButtonText}>Start Workout</Text>
+              </TouchableOpacity>
+            )}
+            {details.status === 'in_progress' && (
+              <TouchableOpacity
+                style={styles.primaryStatusButton}
+                onPress={() => handleStatusChange('completed')}
+                disabled={statusUpdating}
+                testID="mark-complete-button"
+              >
+                <Text style={styles.primaryStatusButtonText}>Mark Complete</Text>
+              </TouchableOpacity>
+            )}
+            {details.status === 'completed' && (
+              <TouchableOpacity
+                style={styles.secondaryStatusButton}
+                onPress={() => handleStatusChange('in_progress')}
+                disabled={statusUpdating}
+                testID="reopen-session-button"
+              >
+                <Text style={styles.secondaryStatusButtonText}>Reopen Session</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -261,6 +376,7 @@ export default function SessionDetailScreen() {
                         targetReps: item.target_reps != null ? String(item.target_reps) : '',
                         clientId: details.client?.id ?? '',
                         exerciseId: item.exercise?.id ?? '',
+                        sessionStatus: details.status,
                       },
                     });
                   }}
@@ -273,7 +389,9 @@ export default function SessionDetailScreen() {
                     {item.exercise?.muscle_group ? (
                       <Text style={styles.exerciseMeta}>{item.exercise.muscle_group}</Text>
                     ) : null}
-                    <Text style={styles.exerciseTarget}>{formatTarget(item)}</Text>
+                    <Text style={styles.exerciseTarget}>
+                      {formatProgress(item, item.exercise?.id ? progressMap[item.exercise.id] : undefined)}
+                    </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
                 </TouchableOpacity>
@@ -313,6 +431,23 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   statusText: { fontSize: 12, fontWeight: '700', color: '#3A3A3C' },
+  statusActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  primaryStatusButton: {
+    backgroundColor: '#1C1C1E',
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  primaryStatusButtonText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  secondaryStatusButton: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+  },
+  secondaryStatusButtonText: { color: '#1C1C1E', fontWeight: '700', fontSize: 14 },
   detailsCard: {
     backgroundColor: '#FFF',
     borderRadius: 20,
@@ -357,8 +492,6 @@ const styles = StyleSheet.create({
   },
   emptyPlanTitle: { marginTop: 12, fontSize: 16, fontWeight: '700', color: '#1C1C1E' },
   emptyPlanMessage: { marginTop: 6, fontSize: 14, color: '#8E8E93', textAlign: 'center', lineHeight: 20 },
-  phaseNote: { flexDirection: 'row', gap: 8, marginTop: 28, paddingHorizontal: 4, alignItems: 'flex-start' },
-  phaseNoteText: { flex: 1, fontSize: 13, lineHeight: 18, color: '#636366' },
   stateContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
   stateTitle: { marginTop: 12, fontSize: 18, fontWeight: '700', color: '#1C1C1E' },
   stateMessage: { marginTop: 8, fontSize: 14, color: '#8E8E93', textAlign: 'center' },
