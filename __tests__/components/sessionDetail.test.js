@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, fireEvent } from '@testing-library/react-native';
+import { render, fireEvent, act } from '@testing-library/react-native';
 import SessionDetailScreen from '../../app/session/[id]';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useAuth } from '../../lib/AuthContext';
@@ -7,11 +7,14 @@ import {
   getWorkoutSessionDetails,
   ensureSessionExercises,
   getSessionExercises,
+  updateWorkoutSessionStatus,
 } from '../../lib/queries/sessions';
+import { getSetLogSummariesForSession } from '../../lib/queries/setLogs';
 
 jest.mock('expo-router', () => ({
   useRouter: jest.fn(() => ({ back: jest.fn(), push: jest.fn() })),
   useLocalSearchParams: jest.fn(() => ({ id: 'session-1' })),
+  useFocusEffect: (effect) => require('react').useEffect(effect, []),
 }));
 
 jest.mock('../../lib/AuthContext', () => ({
@@ -22,6 +25,11 @@ jest.mock('../../lib/queries/sessions', () => ({
   getWorkoutSessionDetails: jest.fn(),
   ensureSessionExercises: jest.fn(),
   getSessionExercises: jest.fn(),
+  updateWorkoutSessionStatus: jest.fn(),
+}));
+
+jest.mock('../../lib/queries/setLogs', () => ({
+  getSetLogSummariesForSession: jest.fn(),
 }));
 
 const SESSION = {
@@ -53,6 +61,8 @@ describe('Session Detail Screen', () => {
       data: [{ id: 'session-exercise-1', order: 0, exercise: { id: 'exercise-1', name: 'Back Squat' } }],
       error: null,
     });
+    getSetLogSummariesForSession.mockResolvedValue({ data: [], error: null });
+    updateWorkoutSessionStatus.mockResolvedValue({ data: { id: 'session-1', status: 'in_progress' }, error: null });
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -83,7 +93,7 @@ describe('Session Detail Screen', () => {
     expect(ensureSessionExercises).toHaveBeenCalledWith('session-1', 'template-1');
   });
 
-  it('navigates to the set-logging screen with target info when an exercise is tapped', async () => {
+  it('navigates to the set-logging screen with target info and current status when an exercise is tapped', async () => {
     const mockPush = jest.fn();
     useRouter.mockReturnValue({ back: jest.fn(), push: mockPush });
 
@@ -100,7 +110,165 @@ describe('Session Detail Screen', () => {
         targetReps: '10',
         clientId: 'client-1',
         exerciseId: 'exercise-1',
+        sessionStatus: 'planned',
       },
     });
+  });
+
+  it('counts only confirmed (checkmarked) sets toward X, not merely filled-in ones', async () => {
+    // Regression test for the exact bug reported: every row has a typed
+    // value (autosaved on blur), but only one has actually been confirmed
+    // via the checkmark. The display must reflect confirmations, not typing.
+    getSetLogSummariesForSession.mockResolvedValue({
+      data: [
+        {
+          id: 'session-exercise-1',
+          exercise_id: 'exercise-1',
+          set_log: [
+            { set_number: 1, weight: 135, reps: 10, completed: true },
+            { set_number: 2, weight: 140, reps: 8, completed: false },
+            { set_number: 3, weight: 145, reps: 6, completed: false },
+            { set_number: 4, weight: 150, reps: 5, completed: false },
+            { set_number: 5, weight: 155, reps: 4, completed: false },
+          ],
+        },
+      ],
+      error: null,
+    });
+
+    const { findByText, queryByText } = await render(<SessionDetailScreen />);
+
+    expect(await findByText('1/5 sets logged \u00b7 135x10')).toBeTruthy();
+    expect(queryByText('5/5 sets logged')).toBeNull();
+  });
+
+  it('shows partial progress (out of the live row count) once some sets are confirmed', async () => {
+    getSetLogSummariesForSession.mockResolvedValue({
+      data: [
+        {
+          id: 'session-exercise-1',
+          exercise_id: 'exercise-1',
+          set_log: [
+            { set_number: 1, weight: 135, reps: 10, completed: true },
+            { set_number: 2, weight: 140, reps: 8, completed: true },
+            { set_number: 3, weight: null, reps: null, completed: false },
+          ],
+        },
+      ],
+      error: null,
+    });
+
+    const { findByText, queryByText } = await render(<SessionDetailScreen />);
+
+    expect(await findByText('2/3 sets logged \u00b7 135x10, 140x8')).toBeTruthy();
+    expect(queryByText('3 sets × 10 reps')).toBeNull();
+    expect(queryByText('Exercise Complete')).toBeNull();
+  });
+
+  it('shows in-progress activity even before anything is confirmed, rather than silently showing the target', async () => {
+    getSetLogSummariesForSession.mockResolvedValue({
+      data: [
+        {
+          id: 'session-exercise-1',
+          exercise_id: 'exercise-1',
+          set_log: [
+            { set_number: 1, weight: 135, reps: 10, completed: false },
+            { set_number: 2, weight: null, reps: null, completed: false },
+            { set_number: 3, weight: null, reps: null, completed: false },
+          ],
+        },
+      ],
+      error: null,
+    });
+
+    const { findByText, queryByText } = await render(<SessionDetailScreen />);
+
+    // Nothing confirmed yet, but there's a typed value — show 0/3, not the
+    // template's static target, and no confirmed-set numbers in the summary.
+    expect(await findByText('0/3 sets logged')).toBeTruthy();
+    expect(queryByText('3 sets × 10 reps')).toBeNull();
+  });
+
+  it('shows an Exercise Complete badge once every set for that exercise is confirmed', async () => {
+    getSetLogSummariesForSession.mockResolvedValue({
+      data: [
+        {
+          id: 'session-exercise-1',
+          exercise_id: 'exercise-1',
+          set_log: [
+            { set_number: 1, weight: 135, reps: 10, completed: true },
+            { set_number: 2, weight: 140, reps: 8, completed: true },
+            { set_number: 3, weight: 145, reps: 6, completed: true },
+          ],
+        },
+      ],
+      error: null,
+    });
+
+    const { findByText } = await render(<SessionDetailScreen />);
+
+    expect(await findByText('3/3 sets logged \u00b7 135x10, 140x8, 145x6')).toBeTruthy();
+    expect(await findByText('Exercise Complete')).toBeTruthy();
+  });
+
+  it('falls back to the template target when nothing has happened yet', async () => {
+    getSetLogSummariesForSession.mockResolvedValue({
+      data: [
+        {
+          id: 'session-exercise-1',
+          exercise_id: 'exercise-1',
+          set_log: [
+            { set_number: 1, weight: null, reps: null, completed: false },
+            { set_number: 2, weight: null, reps: null, completed: false },
+            { set_number: 3, weight: null, reps: null, completed: false },
+          ],
+        },
+      ],
+      error: null,
+    });
+
+    const { findByText } = await render(<SessionDetailScreen />);
+
+    // Still falls back to the template's target, not "0/3 sets logged"
+    expect(await findByText('3 sets × 10 reps')).toBeTruthy();
+  });
+
+  it('shows a Start Workout button for a planned session, and starts it on tap', async () => {
+    const { findByTestId } = await render(<SessionDetailScreen />);
+
+    const startButton = await findByTestId('start-workout-button');
+
+    await act(async () => {
+      fireEvent.press(startButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(updateWorkoutSessionStatus).toHaveBeenCalledWith('session-1', 'in_progress');
+    expect(await findByTestId('mark-complete-button')).toBeTruthy();
+  });
+
+  it('shows a Mark Complete button for an in-progress session, and completes it on tap', async () => {
+    getWorkoutSessionDetails.mockResolvedValue({ data: { ...SESSION, status: 'in_progress' }, error: null });
+    updateWorkoutSessionStatus.mockResolvedValue({ data: { id: 'session-1', status: 'completed' }, error: null });
+
+    const { findByTestId } = await render(<SessionDetailScreen />);
+
+    const completeButton = await findByTestId('mark-complete-button');
+
+    await act(async () => {
+      fireEvent.press(completeButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(updateWorkoutSessionStatus).toHaveBeenCalledWith('session-1', 'completed');
+    expect(await findByTestId('reopen-session-button')).toBeTruthy();
+  });
+
+  it('shows a Reopen Session button for a completed session', async () => {
+    getWorkoutSessionDetails.mockResolvedValue({ data: { ...SESSION, status: 'completed' }, error: null });
+
+    const { findByTestId } = await render(<SessionDetailScreen />);
+
+    expect(await findByTestId('reopen-session-button')).toBeTruthy();
   });
 });
