@@ -217,8 +217,21 @@ export default function TrainerDashboard() {
                       </Text>
                     </View>
                   </View>
-                  <View style={styles.actionPill}>
-                    <Ionicons name="play" size={12} color="#FFF" />
+                  <View style={styles.headerActionsRow}>
+                    {item.status === 'completed' && (
+                      <View style={styles.statusBadgeCompleted} testID={`session-status-badge-${item.id}`}>
+                        <Ionicons name="checkmark-circle" size={12} color="#FFF" />
+                        <Text style={styles.statusBadgeText}>Completed</Text>
+                      </View>
+                    )}
+                    {item.status === 'in_progress' && (
+                      <View style={styles.statusBadgeInProgress} testID={`session-status-badge-${item.id}`}>
+                        <Text style={styles.statusBadgeText}>In Progress</Text>
+                      </View>
+                    )}
+                    <View style={styles.actionPill}>
+                      <Ionicons name="play" size={12} color="#FFF" />
+                    </View>
                   </View>
                 </View>
 
@@ -371,6 +384,31 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  headerActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statusBadgeCompleted: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(52, 199, 89, 0.35)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  statusBadgeInProgress: {
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFF',
   },
   cardFooter: {
     flexDirection: 'row',

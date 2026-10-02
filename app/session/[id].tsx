@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,9 +10,16 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useAuth } from '../../lib/AuthContext';
-import { getWorkoutSessionDetails, ensureSessionExercises, getSessionExercises } from '../../lib/queries/sessions';
+import {
+  getWorkoutSessionDetails,
+  ensureSessionExercises,
+  getSessionExercises,
+  updateWorkoutSessionStatus,
+  WorkoutSessionStatus,
+} from '../../lib/queries/sessions';
+import { getSetLogSummariesForSession } from '../../lib/queries/setLogs';
 
 type SessionExercise = {
   id: string;
@@ -69,6 +77,48 @@ function formatTarget(item: SessionExercise) {
   return 'No target assigned';
 }
 
+type ExerciseProgress = {
+  completedCount: number;
+  totalCount: number;
+  hasAnyActivity: boolean;
+  allCompleted: boolean;
+  summaryText: string | null;
+};
+
+/**
+ * Once the trainer has recorded any activity on this exercise this
+ * session, show what's really happened instead of the template's static
+ * target — a target that never changes no matter what the trainer records
+ * is misleading once real numbers exist. Falls back to formatTarget only
+ * when nothing at all has happened yet (a session's sets exist as blank
+ * rows from the moment its exercise screen is first opened, so a plain row
+ * count alone isn't enough to tell "nothing logged" from "in progress").
+ *
+ * X is how many sets the trainer has actually confirmed complete (tapped
+ * the checkmark on) — not how many rows merely have a value typed in.
+ * Autosave persists in-progress typing the moment a field loses focus (see
+ * the set-logging screen), so "has a value" would count sets the trainer
+ * never actually confirmed, which doesn't match what "complete" means
+ * anywhere else in the app.
+ *
+ * The denominator is the exercise's live SetLog row count for THIS
+ * session, not the template's target_sets — a trainer can add or remove
+ * sets per session independently of the template now, so that's the more
+ * accurate "out of how many" figure.
+ */
+function formatProgress(item: SessionExercise, progress: ExerciseProgress | undefined) {
+  if (!progress || !progress.hasAnyActivity) return formatTarget(item);
+
+  const base = `${progress.completedCount}/${progress.totalCount} sets logged`;
+  return progress.summaryText ? `${base} \u00b7 ${progress.summaryText}` : base;
+}
+
+const STATUS_STYLES: Record<string, { background: string; text: string }> = {
+  planned: { background: '#E5E5EA', text: '#3A3A3C' },
+  in_progress: { background: '#FFE8CC', text: '#B25E00' },
+  completed: { background: '#D8F5DE', text: '#1D7A34' },
+};
+
 export default function SessionDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -81,6 +131,11 @@ export default function SessionDetailScreen() {
   // snapshot is materialized, so tapping an exercise card knows which real
   // row to send the trainer to log sets against (see ensureSessionExercises).
   const [sessionExerciseMap, setSessionExerciseMap] = useState<Record<string, string>>({});
+  // Maps exercise_id -> what's actually been logged this session, so the
+  // exercise list can show real progress instead of the static template
+  // target once logging has started (see formatProgress).
+  const [progressMap, setProgressMap] = useState<Record<string, ExerciseProgress>>({});
+  const [statusUpdating, setStatusUpdating] = useState(false);
 
   const loadSession = useCallback(async () => {
     if (!session || !id) {
@@ -116,14 +171,58 @@ export default function SessionDetailScreen() {
         if (se.exercise?.id) map[se.exercise.id] = se.id;
       });
       setSessionExerciseMap(map);
+
+      const { data: summaries } = await getSetLogSummariesForSession(id);
+      const progress: Record<string, ExerciseProgress> = {};
+      (summaries ?? []).forEach((se: any) => {
+        const logs = (se.set_log ?? []).slice().sort((a: any, b: any) => a.set_number - b.set_number);
+        if (logs.length === 0) return;
+
+        // "Any activity" (the fallback trigger) is broader than "completed"
+        // — a row with a typed-but-unconfirmed value still counts as
+        // activity worth showing, even though it doesn't count toward X.
+        const filledLogs = logs.filter((log: any) => log.weight != null || log.reps != null);
+        const completedLogs = logs.filter((log: any) => log.completed);
+        if (filledLogs.length === 0 && completedLogs.length === 0) return;
+
+        // Only confirmed sets appear in the detail text — showing an
+        // unconfirmed value next to a count that only counts confirmed
+        // sets would be its own source of confusion.
+        const summaryText = completedLogs
+          .map((log: any) => {
+            if (log.weight != null && log.reps != null) return `${log.weight}x${log.reps}`;
+            if (log.weight != null) return `${log.weight} lbs`;
+            if (log.reps != null) return `${log.reps} reps`;
+            return null;
+          })
+          .filter(Boolean)
+          .join(', ');
+
+        progress[se.exercise_id] = {
+          completedCount: completedLogs.length,
+          totalCount: logs.length,
+          hasAnyActivity: true,
+          allCompleted: logs.every((log: any) => log.completed),
+          summaryText: summaryText || null,
+        };
+      });
+      setProgressMap(progress);
     }
 
     setLoading(false);
   }, [id, session]);
 
-  useEffect(() => {
-    loadSession();
-  }, [loadSession]);
+  // useFocusEffect (not a plain useEffect) so this refetches every time the
+  // screen regains focus — including when returning from the set-logging
+  // screen via router.back(). Stack screens stay mounted when another
+  // screen is pushed on top, so a plain mount-effect would keep showing
+  // stale progress/status after logging sets. Same fix already applied to
+  // the dashboard for the same reason.
+  useFocusEffect(
+    useCallback(() => {
+      loadSession();
+    }, [loadSession])
+  );
 
   if (loading) {
     return (
@@ -164,6 +263,22 @@ export default function SessionDetailScreen() {
 
   const hasTemplate = !!details.day_type_template;
 
+  const handleStatusChange = async (nextStatus: WorkoutSessionStatus) => {
+    setStatusUpdating(true);
+    try {
+      const { data, error } = await updateWorkoutSessionStatus(details.id, nextStatus);
+      if (error || !data) throw error ?? new Error('No response from server.');
+      setDetails((prev) => (prev ? { ...prev, status: data.status } : prev));
+    } catch (err: any) {
+      console.error('❌ Failed to update session status:', err.message);
+      Alert.alert('Update Failed', err.message || 'An unexpected server issue occurred.');
+    } finally {
+      setStatusUpdating(false);
+    }
+  };
+
+  const statusStyle = STATUS_STYLES[details.status] ?? STATUS_STYLES.planned;
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.navBar}>
@@ -180,8 +295,41 @@ export default function SessionDetailScreen() {
           <Text style={styles.templateName}>
             {details.day_type_template?.name ?? 'Workout Session'}
           </Text>
-          <View style={styles.statusPill}>
-            <Text style={styles.statusText}>{formatStatus(details.status)}</Text>
+          <View style={[styles.statusPill, { backgroundColor: statusStyle.background }]}>
+            <Text style={[styles.statusText, { color: statusStyle.text }]}>{formatStatus(details.status)}</Text>
+          </View>
+
+          <View style={styles.statusActions}>
+            {details.status === 'planned' && (
+              <TouchableOpacity
+                style={styles.primaryStatusButton}
+                onPress={() => handleStatusChange('in_progress')}
+                disabled={statusUpdating}
+                testID="start-workout-button"
+              >
+                <Text style={styles.primaryStatusButtonText}>Start Workout</Text>
+              </TouchableOpacity>
+            )}
+            {details.status === 'in_progress' && (
+              <TouchableOpacity
+                style={styles.primaryStatusButton}
+                onPress={() => handleStatusChange('completed')}
+                disabled={statusUpdating}
+                testID="mark-complete-button"
+              >
+                <Text style={styles.primaryStatusButtonText}>Mark Complete</Text>
+              </TouchableOpacity>
+            )}
+            {details.status === 'completed' && (
+              <TouchableOpacity
+                style={styles.secondaryStatusButton}
+                onPress={() => handleStatusChange('in_progress')}
+                disabled={statusUpdating}
+                testID="reopen-session-button"
+              >
+                <Text style={styles.secondaryStatusButtonText}>Reopen Session</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -244,6 +392,7 @@ export default function SessionDetailScreen() {
           <View style={styles.exerciseList}>
             {details.exercises.map((item, index) => {
               const sessionExerciseId = item.exercise?.id ? sessionExerciseMap[item.exercise.id] : undefined;
+              const progress = item.exercise?.id ? progressMap[item.exercise.id] : undefined;
               return (
                 <TouchableOpacity
                   key={item.id}
@@ -261,19 +410,32 @@ export default function SessionDetailScreen() {
                         targetReps: item.target_reps != null ? String(item.target_reps) : '',
                         clientId: details.client?.id ?? '',
                         exerciseId: item.exercise?.id ?? '',
+                        sessionStatus: details.status,
                       },
                     });
                   }}
                 >
-                  <View style={styles.exerciseNumber}>
-                    <Text style={styles.exerciseNumberText}>{index + 1}</Text>
+                  <View style={[styles.exerciseNumber, progress?.allCompleted && styles.exerciseNumberComplete]}>
+                    {progress?.allCompleted ? (
+                      <Ionicons name="checkmark" size={16} color="#FFF" />
+                    ) : (
+                      <Text style={styles.exerciseNumberText}>{index + 1}</Text>
+                    )}
                   </View>
                   <View style={styles.exerciseInfo}>
                     <Text style={styles.exerciseName}>{item.exercise?.name ?? 'Exercise'}</Text>
                     {item.exercise?.muscle_group ? (
                       <Text style={styles.exerciseMeta}>{item.exercise.muscle_group}</Text>
                     ) : null}
-                    <Text style={styles.exerciseTarget}>{formatTarget(item)}</Text>
+                    <Text style={styles.exerciseTarget}>
+                      {formatProgress(item, progress)}
+                    </Text>
+                    {progress?.allCompleted && (
+                      <View style={styles.exerciseCompletePill} testID={`exercise-complete-${item.id}`}>
+                        <Ionicons name="checkmark-circle" size={12} color="#1D7A34" />
+                        <Text style={styles.exerciseCompletePillText}>Exercise Complete</Text>
+                      </View>
+                    )}
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
                 </TouchableOpacity>
@@ -313,6 +475,23 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   statusText: { fontSize: 12, fontWeight: '700', color: '#3A3A3C' },
+  statusActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  primaryStatusButton: {
+    backgroundColor: '#1C1C1E',
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  primaryStatusButtonText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  secondaryStatusButton: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#D1D1D6',
+  },
+  secondaryStatusButtonText: { color: '#1C1C1E', fontWeight: '700', fontSize: 14 },
   detailsCard: {
     backgroundColor: '#FFF',
     borderRadius: 20,
@@ -349,6 +528,19 @@ const styles = StyleSheet.create({
   exerciseName: { fontSize: 16, fontWeight: '700', color: '#1C1C1E' },
   exerciseMeta: { fontSize: 13, color: '#8E8E93', marginTop: 2, textTransform: 'capitalize' },
   exerciseTarget: { fontSize: 13, color: '#636366', marginTop: 6 },
+  exerciseNumberComplete: { backgroundColor: '#34C759' },
+  exerciseCompletePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    backgroundColor: '#D8F5DE',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginTop: 6,
+  },
+  exerciseCompletePillText: { fontSize: 11, fontWeight: '700', color: '#1D7A34' },
   emptyPlan: {
     backgroundColor: '#FFF',
     borderRadius: 20,
@@ -357,8 +549,6 @@ const styles = StyleSheet.create({
   },
   emptyPlanTitle: { marginTop: 12, fontSize: 16, fontWeight: '700', color: '#1C1C1E' },
   emptyPlanMessage: { marginTop: 6, fontSize: 14, color: '#8E8E93', textAlign: 'center', lineHeight: 20 },
-  phaseNote: { flexDirection: 'row', gap: 8, marginTop: 28, paddingHorizontal: 4, alignItems: 'flex-start' },
-  phaseNoteText: { flex: 1, fontSize: 13, lineHeight: 18, color: '#636366' },
   stateContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
   stateTitle: { marginTop: 12, fontSize: 18, fontWeight: '700', color: '#1C1C1E' },
   stateMessage: { marginTop: 8, fontSize: 14, color: '#8E8E93', textAlign: 'center' },

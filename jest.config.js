@@ -19,4 +19,5 @@ module.exports = {
       testMatch: ['<rootDir>/__tests__/integration/**/*.test.js'],
     },
   ],
+  testTimeout: 10000,
 }

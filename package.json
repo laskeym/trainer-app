@@ -34,13 +34,15 @@
     "@types/react": "~19.2.2",
     "dotenv": "^17.4.2",
     "jest-expo": "^57.0.4",
+    "patch-package": "^8.0.1",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "postinstall": "patch-package"
   },
   "private": true
 }
