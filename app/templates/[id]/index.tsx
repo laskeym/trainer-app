@@ -15,11 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import {
-  NestableScrollContainer,
-  NestableDraggableFlatList,
-  ScaleDecorator,
-} from 'react-native-draggable-flatlist';
+import DragList, { DragListRenderItemInfo } from 'react-native-draglist';
 import { supabase } from '../../../lib/supabase';
 import {
   getDayTypeTemplateWithExercises,
@@ -219,12 +215,16 @@ export default function TemplateEditorScreen() {
     ]);
   };
 
-  const handleDragEnd = async ({ data }: { data: any[] }) => {
+  const handleReordered = async (fromIndex: number, toIndex: number) => {
+    const reordered = [...template.exercises];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+
     // Update locally right away so the reorder feels instant, then persist.
-    setTemplate((prev: any) => ({ ...prev, exercises: data }));
+    setTemplate((prev: any) => ({ ...prev, exercises: reordered }));
 
     try {
-      const { error } = await reorderTemplateExercises(data.map((ex) => ({ id: ex.id })));
+      const { error } = await reorderTemplateExercises(reordered.map((ex) => ({ id: ex.id })));
       if (error) throw error;
     } catch (err: any) {
       console.error('❌ Failed to persist exercise order:', err.message);
@@ -270,96 +270,99 @@ export default function TemplateEditorScreen() {
         <View style={styles.iconButton} />
       </View>
 
-      <NestableScrollContainer contentContainerStyle={styles.scrollLayout} keyboardShouldPersistTaps="handled">
-        <Text style={styles.sectionHeader}>EXERCISES</Text>
-
-        <NestableDraggableFlatList
-          data={template.exercises}
-          keyExtractor={(ex: any) => ex.id}
-          onDragEnd={handleDragEnd}
-          ListEmptyComponent={
-            <Text style={styles.emptyText}>
-              No exercises yet. Add some below to build out this template.
-            </Text>
-          }
-          renderItem={({ item: ex, drag, isActive }: any) => (
-            <ScaleDecorator>
-              <View
-                style={[styles.exerciseCard, isActive && styles.exerciseCardActive]}
-                testID={`template-exercise-${ex.id}`}
-              >
-                <View style={styles.exerciseCardTop}>
-                  <View style={styles.exerciseNameBlock}>
-                    <Text style={styles.exerciseName}>{ex.exercise?.name}</Text>
-                    {(ex.exercise?.muscle_group || ex.exercise?.equipment) && (
-                      <Text style={styles.exerciseSubtitle} numberOfLines={1}>
-                        {[ex.exercise?.muscle_group, ex.exercise?.equipment].filter(Boolean).join(' \u2022 ')}
-                      </Text>
-                    )}
-                  </View>
-
-                  {/* Long-press anywhere on this handle to pick the row up —
-                      matches the standard native reorder gesture, and keeps
-                      drag activation away from the SETS/REPS text inputs and
-                      the remove button below so they stay normal taps. */}
-                  <TouchableOpacity
-                    onLongPress={drag}
-                    disabled={isActive}
-                    delayLongPress={150}
-                    style={styles.dragHandle}
-                    testID={`drag-handle-${ex.id}`}
-                  >
-                    <Ionicons name="reorder-three-outline" size={22} color="#8E8E93" />
-                  </TouchableOpacity>
-                </View>
-
-                <View style={styles.targetsRow}>
-                  <View style={styles.targetField}>
-                    <Text style={styles.targetLabel}>SETS</Text>
-                    <TextInput
-                      style={styles.targetInput}
-                      keyboardType="numeric"
-                      placeholder={'\u2014'}
-                      placeholderTextColor="#C7C7CC"
-                      value={targetInputs[ex.id]?.sets ?? ''}
-                      onChangeText={(v) =>
-                        setTargetInputs((prev) => ({ ...prev, [ex.id]: { ...prev[ex.id], sets: v } }))
-                      }
-                      onBlur={() => handleTargetBlur(ex.id)}
-                    />
-                  </View>
-                  <View style={styles.targetField}>
-                    <Text style={styles.targetLabel}>REPS</Text>
-                    <TextInput
-                      style={styles.targetInput}
-                      keyboardType="numeric"
-                      placeholder={'\u2014'}
-                      placeholderTextColor="#C7C7CC"
-                      value={targetInputs[ex.id]?.reps ?? ''}
-                      onChangeText={(v) =>
-                        setTargetInputs((prev) => ({ ...prev, [ex.id]: { ...prev[ex.id], reps: v } }))
-                      }
-                      onBlur={() => handleTargetBlur(ex.id)}
-                    />
-                  </View>
-                  <TouchableOpacity
-                    style={styles.removeButton}
-                    onPress={() => handleRemoveExercise(ex.id)}
-                    testID={`remove-${ex.id}`}
-                  >
-                    <Ionicons name="trash-outline" size={18} color="#FF3B30" />
-                  </TouchableOpacity>
-                </View>
+      {/* DragList is FlatList-based, so the header/footer content that used
+          to sit around it inside a ScrollView now lives in
+          ListHeaderComponent/ListFooterComponent instead — nesting a
+          FlatList inside a ScrollView breaks virtualization and triggers
+          React Native's own warning against it. */}
+      <DragList
+        data={template.exercises}
+        keyExtractor={(ex: any) => ex.id}
+        onReordered={handleReordered}
+        contentContainerStyle={styles.scrollLayout}
+        keyboardShouldPersistTaps="handled"
+        ListHeaderComponent={<Text style={styles.sectionHeader}>EXERCISES</Text>}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>
+            No exercises yet. Add some below to build out this template.
+          </Text>
+        }
+        ListFooterComponent={
+          <TouchableOpacity style={styles.addExerciseButton} onPress={openPicker}>
+            <Ionicons name="add-circle" size={18} color="#1C1C1E" />
+            <Text style={styles.addExerciseText}>Add Exercise</Text>
+          </TouchableOpacity>
+        }
+        renderItem={({ item: ex, onDragStart, onDragEnd, isActive }: DragListRenderItemInfo<any>) => (
+          <View
+            style={[styles.exerciseCard, isActive && styles.exerciseCardActive]}
+            testID={`template-exercise-${ex.id}`}
+          >
+            <View style={styles.exerciseCardTop}>
+              <View style={styles.exerciseNameBlock}>
+                <Text style={styles.exerciseName}>{ex.exercise?.name}</Text>
+                {(ex.exercise?.muscle_group || ex.exercise?.equipment) && (
+                  <Text style={styles.exerciseSubtitle} numberOfLines={1}>
+                    {[ex.exercise?.muscle_group, ex.exercise?.equipment].filter(Boolean).join(' \u2022 ')}
+                  </Text>
+                )}
               </View>
-            </ScaleDecorator>
-          )}
-        />
 
-        <TouchableOpacity style={styles.addExerciseButton} onPress={openPicker}>
-          <Ionicons name="add-circle" size={18} color="#1C1C1E" />
-          <Text style={styles.addExerciseText}>Add Exercise</Text>
-        </TouchableOpacity>
-      </NestableScrollContainer>
+              {/* Press and hold anywhere on this handle to pick the row up
+                  — keeps drag activation away from the SETS/REPS text
+                  inputs and the remove button below so they stay normal
+                  taps. onPressOut must fire onDragEnd even on a plain tap
+                  (no movement), or DragList never learns the gesture ended. */}
+              <TouchableOpacity
+                onPressIn={onDragStart}
+                onPressOut={onDragEnd}
+                style={styles.dragHandle}
+                testID={`drag-handle-${ex.id}`}
+              >
+                <Ionicons name="reorder-three-outline" size={22} color="#8E8E93" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.targetsRow}>
+              <View style={styles.targetField}>
+                <Text style={styles.targetLabel}>SETS</Text>
+                <TextInput
+                  style={styles.targetInput}
+                  keyboardType="numeric"
+                  placeholder={'\u2014'}
+                  placeholderTextColor="#C7C7CC"
+                  value={targetInputs[ex.id]?.sets ?? ''}
+                  onChangeText={(v) =>
+                    setTargetInputs((prev) => ({ ...prev, [ex.id]: { ...prev[ex.id], sets: v } }))
+                  }
+                  onBlur={() => handleTargetBlur(ex.id)}
+                />
+              </View>
+              <View style={styles.targetField}>
+                <Text style={styles.targetLabel}>REPS</Text>
+                <TextInput
+                  style={styles.targetInput}
+                  keyboardType="numeric"
+                  placeholder={'\u2014'}
+                  placeholderTextColor="#C7C7CC"
+                  value={targetInputs[ex.id]?.reps ?? ''}
+                  onChangeText={(v) =>
+                    setTargetInputs((prev) => ({ ...prev, [ex.id]: { ...prev[ex.id], reps: v } }))
+                  }
+                  onBlur={() => handleTargetBlur(ex.id)}
+                />
+              </View>
+              <TouchableOpacity
+                style={styles.removeButton}
+                onPress={() => handleRemoveExercise(ex.id)}
+                testID={`remove-${ex.id}`}
+              >
+                <Ionicons name="trash-outline" size={18} color="#FF3B30" />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      />
 
       {/* Exercise picker modal */}
       <Modal

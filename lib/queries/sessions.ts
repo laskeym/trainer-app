@@ -318,3 +318,65 @@ export async function clearSessionExercisesForTemplateChange(sessionId: string) 
   const { error } = await supabase.from('session_exercise').delete().eq('session_id', sessionId);
   return { error };
 }
+
+export interface AddSessionExerciseInput {
+  sessionId: string;
+  exerciseId: string;
+  order: number;
+  dayTypeTemplateId: string | null;
+}
+
+/**
+ * Adds an exercise directly to this session's live plan, independent of
+ * whatever the assigned template originally specified — e.g. a trainer
+ * adding an extra exercise for today only. Tagged with the session's
+ * current day_type_template_id (if any), same denormalization the initial
+ * template snapshot uses, purely for later recommendation-query
+ * convenience — it does not make this row "part of" that template.
+ */
+export async function addSessionExercise(input: AddSessionExerciseInput) {
+  const { data, error } = await supabase
+    .from('session_exercise')
+    .insert({
+      session_id: input.sessionId,
+      exercise_id: input.exerciseId,
+      order: input.order,
+      day_type_template_id: input.dayTypeTemplateId,
+    })
+    .select(`
+      id,
+      order,
+      exercise:exercise_id ( id, name, muscle_group, equipment )
+    `)
+    .single();
+
+  return { data, error };
+}
+
+/**
+ * Removes one exercise from this session's live plan. Cascades to delete
+ * any SetLog rows already logged against it (same ON DELETE CASCADE that
+ * backs clearSessionExercisesForTemplateChange above).
+ */
+export async function removeSessionExercise(sessionExerciseId: string) {
+  const { error } = await supabase.from('session_exercise').delete().eq('id', sessionExerciseId);
+  return { error };
+}
+
+/**
+ * Persists a full reorder of this session's exercises in one call: pass
+ * the SessionExercise rows in their new order, and this writes each row's
+ * "order" column to match its new array index (0-based). Same pattern as
+ * reorderTemplateExercises in templates.ts, applied to the session's own
+ * live exercise list instead of the template's.
+ */
+export async function reorderSessionExercises(items: { id: string }[]) {
+  const results = await Promise.all(
+    items.map((item, index) =>
+      supabase.from('session_exercise').update({ order: index }).eq('id', item.id)
+    )
+  );
+
+  const firstError = results.find((r) => r.error)?.error ?? null;
+  return { error: firstError };
+}
