@@ -17,6 +17,7 @@ import {
   ensureSessionExercises,
   getSessionExercises,
   updateWorkoutSessionStatus,
+  deleteWorkoutSession,
   WorkoutSessionStatus,
 } from '../../lib/queries/sessions';
 import { getSetLogSummariesForSession } from '../../lib/queries/setLogs';
@@ -136,6 +137,7 @@ export default function SessionDetailScreen() {
   // target once logging has started (see formatProgress).
   const [progressMap, setProgressMap] = useState<Record<string, ExerciseProgress>>({});
   const [statusUpdating, setStatusUpdating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const loadSession = useCallback(async () => {
     if (!session || !id) {
@@ -279,6 +281,32 @@ export default function SessionDetailScreen() {
 
   const statusStyle = STATUS_STYLES[details.status] ?? STATUS_STYLES.planned;
 
+  const handleDelete = () => {
+    Alert.alert(
+      'Delete Session',
+      `Delete this session with ${details.client?.name ?? 'this client'}? Any logged sets will be permanently lost. This can't be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              const { error } = await deleteWorkoutSession(details.id);
+              if (error) throw error;
+              router.back();
+            } catch (err: any) {
+              console.error('❌ Failed to delete session:', err.message);
+              Alert.alert('Delete Failed', err.message || 'An unexpected server issue occurred.');
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.navBar}>
@@ -286,7 +314,24 @@ export default function SessionDetailScreen() {
           <Ionicons name="chevron-back" size={24} color="#1C1C1E" />
         </TouchableOpacity>
         <Text style={styles.navTitle}>Session</Text>
-        <View style={styles.navSpacer} />
+        <View style={styles.navActions}>
+          <TouchableOpacity
+            onPress={() => router.push({ pathname: '/session/new', params: { editSessionId: details.id } })}
+            style={styles.navIconButton}
+            disabled={deleting}
+            testID="edit-session-button"
+          >
+            <Ionicons name="pencil-outline" size={20} color="#1C1C1E" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleDelete}
+            style={styles.navIconButton}
+            disabled={deleting}
+            testID="delete-session-button"
+          >
+            <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
@@ -461,6 +506,8 @@ const styles = StyleSheet.create({
   backButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   navTitle: { fontSize: 17, fontWeight: '700', color: '#1C1C1E' },
   navSpacer: { width: 40 },
+  navActions: { flexDirection: 'row', gap: 4 },
+  navIconButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   loader: { marginTop: 64 },
   content: { padding: 24, paddingTop: 12, paddingBottom: 40 },
   hero: { marginBottom: 24 },
