@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, fireEvent, act } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import SessionDetailScreen from '../../app/session/[id]';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useAuth } from '../../lib/AuthContext';
@@ -8,6 +9,7 @@ import {
   ensureSessionExercises,
   getSessionExercises,
   updateWorkoutSessionStatus,
+  deleteWorkoutSession,
 } from '../../lib/queries/sessions';
 import { getSetLogSummariesForSession } from '../../lib/queries/setLogs';
 
@@ -26,6 +28,7 @@ jest.mock('../../lib/queries/sessions', () => ({
   ensureSessionExercises: jest.fn(),
   getSessionExercises: jest.fn(),
   updateWorkoutSessionStatus: jest.fn(),
+  deleteWorkoutSession: jest.fn(),
 }));
 
 jest.mock('../../lib/queries/setLogs', () => ({
@@ -63,6 +66,7 @@ describe('Session Detail Screen', () => {
     });
     getSetLogSummariesForSession.mockResolvedValue({ data: [], error: null });
     updateWorkoutSessionStatus.mockResolvedValue({ data: { id: 'session-1', status: 'in_progress' }, error: null });
+    deleteWorkoutSession.mockResolvedValue({ error: null });
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -270,5 +274,56 @@ describe('Session Detail Screen', () => {
     const { findByTestId } = await render(<SessionDetailScreen />);
 
     expect(await findByTestId('reopen-session-button')).toBeTruthy();
+  });
+
+  it('navigates to the edit screen with this session\u2019s id when the edit button is pressed', async () => {
+    const mockPush = jest.fn();
+    useRouter.mockReturnValue({ back: jest.fn(), push: mockPush });
+
+    const { findByTestId } = await render(<SessionDetailScreen />);
+
+    const editButton = await findByTestId('edit-session-button');
+    fireEvent.press(editButton);
+
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/session/new',
+      params: { editSessionId: 'session-1' },
+    });
+  });
+
+  it('does nothing when delete is pressed and then cancelled', async () => {
+    jest.spyOn(Alert, 'alert').mockImplementation((title, message, buttons) => {
+      const cancelButton = buttons.find((b) => b.text === 'Cancel');
+      cancelButton?.onPress?.();
+    });
+
+    const { findByTestId } = await render(<SessionDetailScreen />);
+
+    const deleteButton = await findByTestId('delete-session-button');
+    fireEvent.press(deleteButton);
+
+    expect(deleteWorkoutSession).not.toHaveBeenCalled();
+  });
+
+  it('deletes the session and navigates back when delete is confirmed', async () => {
+    const mockBack = jest.fn();
+    useRouter.mockReturnValue({ back: mockBack, push: jest.fn() });
+
+    jest.spyOn(Alert, 'alert').mockImplementation((title, message, buttons) => {
+      const deleteButton = buttons.find((b) => b.text === 'Delete');
+      deleteButton?.onPress?.();
+    });
+
+    const { findByTestId } = await render(<SessionDetailScreen />);
+
+    const deleteButton = await findByTestId('delete-session-button');
+
+    await act(async () => {
+      fireEvent.press(deleteButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(deleteWorkoutSession).toHaveBeenCalledWith('session-1');
+    expect(mockBack).toHaveBeenCalled();
   });
 });

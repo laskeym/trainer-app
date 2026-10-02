@@ -220,3 +220,101 @@ export async function getSessionExercises(sessionId: string) {
 
   return { data, error };
 }
+
+/**
+ * Deletes a session outright. session_exercise.session_id and
+ * set_log.session_exercise_id both have ON DELETE CASCADE, so this one
+ * call also removes every exercise and logged set that belonged to it —
+ * no manual child cleanup needed.
+ */
+export async function deleteWorkoutSession(sessionId: string) {
+  const { error } = await supabase.from('workout_session').delete().eq('id', sessionId);
+  return { error };
+}
+
+/**
+ * Minimal read for the edit-session form: just the editable fields plus
+ * enough client/template display info to pre-fill the form, not the full
+ * exercise plan (getWorkoutSessionDetails already covers that elsewhere).
+ */
+export async function getWorkoutSessionForEdit(trainerId: string, sessionId: string) {
+  const { data, error } = await supabase
+    .from('workout_session')
+    .select(`
+      id,
+      day_type_template_id,
+      scheduled_start,
+      scheduled_end,
+      location,
+      client:client_id ( id, name ),
+      day_type_template:day_type_template_id ( id, name )
+    `)
+    .eq('id', sessionId)
+    .eq('trainer_id', trainerId)
+    .single();
+
+  return { data, error };
+}
+
+export interface UpdateWorkoutSessionInput {
+  dayTypeTemplateId: string | null;
+  scheduledStart: string;
+  scheduledEnd: string;
+  location: string | null;
+}
+
+/**
+ * Updates a session's schedule/plan-assignment fields. Deliberately has no
+ * clientId field — once a session is logged against a client, reassigning
+ * it to a different client would leave that client's logged history
+ * attached to the wrong person. If a trainer picked the wrong client,
+ * delete and recreate the session instead.
+ */
+export async function updateWorkoutSession(sessionId: string, input: UpdateWorkoutSessionInput) {
+  const { data, error } = await supabase
+    .from('workout_session')
+    .update({
+      day_type_template_id: input.dayTypeTemplateId,
+      scheduled_start: input.scheduledStart,
+      scheduled_end: input.scheduledEnd,
+      location: input.location,
+    })
+    .eq('id', sessionId)
+    .select('id')
+    .single();
+
+  return { data, error };
+}
+
+/**
+ * Whether this session has any real logged activity yet — any set with a
+ * typed-in value or a confirmed checkmark. Used to decide whether changing
+ * the session's workout type needs a destructive-overwrite warning (there's
+ * real work to lose) or can just silently reset the plan (there isn't).
+ */
+export async function hasLoggedActivity(sessionId: string): Promise<{ data: boolean; error: any }> {
+  const { data, error } = await supabase
+    .from('session_exercise')
+    .select('set_log ( weight, reps, completed )')
+    .eq('session_id', sessionId);
+
+  if (error) return { data: false, error };
+
+  const hasActivity = (data ?? []).some((se: any) =>
+    (se.set_log ?? []).some((log: any) => log.weight != null || log.reps != null || log.completed)
+  );
+
+  return { data: hasActivity, error: null };
+}
+
+/**
+ * Clears this session's SessionExercise rows (and, via cascade, their
+ * SetLog rows) when the workout type changes — the old plan and any
+ * logged sets against it no longer apply to the newly-assigned template.
+ * The next time the session detail screen loads, ensureSessionExercises
+ * re-snapshots fresh rows from whatever template is now assigned.
+ */
+export async function clearSessionExercisesForTemplateChange(sessionId: string) {
+  const { error } = await supabase.from('session_exercise').delete().eq('session_id', sessionId);
+  return { error };
+}

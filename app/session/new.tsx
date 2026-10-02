@@ -17,7 +17,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../lib/supabase';
-import { createWorkoutSession } from '../../lib/queries/sessions';
+import {
+  createWorkoutSession,
+  getWorkoutSessionForEdit,
+  updateWorkoutSession,
+  hasLoggedActivity,
+  clearSessionExercisesForTemplateChange,
+} from '../../lib/queries/sessions';
 import { getClientsForTrainer } from '../../lib/queries/clients';
 import { getDayTypeTemplatesForTrainer } from '../../lib/queries/templates';
 import MonthCalendarModal from '../../components/MonthCalendarModal';
@@ -63,6 +69,33 @@ function buildScheduledTimestamp(dateIso: string, time24: string): string {
   return new Date(year, month - 1, day, hour, minute, 0, 0).toISOString();
 }
 
+// Reverses buildScheduledTimestamp, for pre-filling the edit form from an
+// existing session's stored timestamp — local calendar date/time, not UTC
+// (same reasoning as toIsoDateLocal elsewhere in this app).
+function isoToDateAndTime(iso: string): { date: string; time24: string } {
+  const d = new Date(iso);
+  const date = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+  const time24 = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+  return { date, time24 };
+}
+
+function minutesBetweenIso(startIso: string, endIso: string): number {
+  return Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 60000);
+}
+
+// Supabase's nested-embed type inference reads a to-one foreign-table embed
+// as an array even when the FK makes it a single row — same quirk already
+// worked around the same way in app/session/[id].tsx.
+type EditableSession = {
+  id: string;
+  day_type_template_id: string | null;
+  scheduled_start: string;
+  scheduled_end: string;
+  location: string | null;
+  client: { id: string; name: string } | null;
+  day_type_template: { id: string; name: string } | null;
+};
+
 function addMinutesToTime(time24: string, minutesToAdd: number): string {
   const [hour, minute] = time24.split(':').map(Number);
   const total = hour * 60 + minute + minutesToAdd;
@@ -80,7 +113,8 @@ function formatTime24(time24: string): string {
 
 export default function ScheduleSessionScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ date?: string }>();
+  const params = useLocalSearchParams<{ date?: string; editSessionId?: string }>();
+  const isEditMode = typeof params.editSessionId === 'string' && params.editSessionId.length > 0;
 
   const [loading, setLoading] = useState(false);
   const [trainerId, setTrainerId] = useState<string | null>(null);
@@ -88,6 +122,12 @@ export default function ScheduleSessionScreen() {
   const [clients, setClients] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]);
   const [loadingOptions, setLoadingOptions] = useState(true);
+
+  // The template this session actually had when the edit form opened —
+  // compared against form.dayTypeTemplateId at save time to tell whether
+  // the trainer changed it (which needs the overwrite warning) from every
+  // other kind of edit (which doesn't touch the plan at all).
+  const [originalTemplateId, setOriginalTemplateId] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     clientId: '' as string,
@@ -124,13 +164,38 @@ export default function ScheduleSessionScreen() {
 
       setClients(clientsResult.data ?? []);
       setTemplates(templatesResult.data ?? []);
+
+      if (isEditMode && params.editSessionId) {
+        const { data: rawSession, error: sessionError } = await getWorkoutSessionForEdit(
+          user.id,
+          params.editSessionId
+        );
+        if (sessionError) throw sessionError;
+        if (!rawSession) throw new Error('This session could not be found.');
+
+        const session = rawSession as unknown as EditableSession;
+        const { date, time24 } = isoToDateAndTime(session.scheduled_start);
+        const durationMinutes = minutesBetweenIso(session.scheduled_start, session.scheduled_end);
+
+        setOriginalTemplateId(session.day_type_template_id ?? null);
+        setForm({
+          clientId: session.client?.id ?? '',
+          clientName: session.client?.name ?? '',
+          dayTypeTemplateId: session.day_type_template_id ?? null,
+          dayTypeTemplateName: session.day_type_template?.name ?? 'No Template',
+          date,
+          startTime: time24,
+          durationMinutes,
+          location: session.location ?? '',
+        });
+      }
     } catch (error: any) {
       console.error('❌ Failed to load scheduling options:', error.message);
       Alert.alert('Couldn\u2019t Load Data', error.message || 'An unexpected server issue occurred.');
     } finally {
       setLoadingOptions(false);
     }
-  }, []);
+  }, [isEditMode, params.editSessionId]);
 
   useEffect(() => {
     loadOptions();
@@ -142,6 +207,30 @@ export default function ScheduleSessionScreen() {
 
   const endTime = addMinutesToTime(form.startTime, form.durationMinutes);
 
+  const performUpdate = async (scheduledStart: string, scheduledEnd: string, resetPlan: boolean) => {
+    try {
+      if (resetPlan) {
+        const { error: clearError } = await clearSessionExercisesForTemplateChange(params.editSessionId as string);
+        if (clearError) throw clearError;
+      }
+
+      const { error: updateError } = await updateWorkoutSession(params.editSessionId as string, {
+        dayTypeTemplateId: form.dayTypeTemplateId,
+        scheduledStart,
+        scheduledEnd,
+        location: form.location.trim() || null,
+      });
+      if (updateError) throw updateError;
+
+      Alert.alert('Success', 'Session updated!', [{ text: 'OK', onPress: () => router.back() }]);
+    } catch (error: any) {
+      console.error('❌ Failed to update session:', error.message);
+      Alert.alert('Update Failed', error.message || 'An unexpected server issue occurred.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!form.clientId) {
       Alert.alert('Required Field', 'Please select a client for this session.');
@@ -152,12 +241,58 @@ export default function ScheduleSessionScreen() {
       return;
     }
 
+    const scheduledStart = buildScheduledTimestamp(form.date, form.startTime);
+    const scheduledEnd = buildScheduledTimestamp(form.date, endTime);
+
+    if (isEditMode) {
+      const templateChanged = form.dayTypeTemplateId !== originalTemplateId;
+
+      setLoading(true);
+
+      if (!templateChanged) {
+        await performUpdate(scheduledStart, scheduledEnd, false);
+        return;
+      }
+
+      // Workout type changed — check whether there's real logged work on
+      // this session before deciding whether that needs a warning. An
+      // unused, freshly-snapshotted plan has nothing worth protecting.
+      try {
+        const { data: hasActivity, error: activityError } = await hasLoggedActivity(params.editSessionId as string);
+        if (activityError) throw activityError;
+
+        if (!hasActivity) {
+          await performUpdate(scheduledStart, scheduledEnd, true);
+          return;
+        }
+
+        setLoading(false);
+        Alert.alert(
+          'Change Workout Type?',
+          'This session already has logged sets. Changing the workout type will clear the current workout plan and everything logged against it — this can\u2019t be undone.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Change & Clear',
+              style: 'destructive',
+              onPress: () => {
+                setLoading(true);
+                performUpdate(scheduledStart, scheduledEnd, true);
+              },
+            },
+          ]
+        );
+      } catch (error: any) {
+        console.error('❌ Failed to check session activity:', error.message);
+        Alert.alert('Update Failed', error.message || 'An unexpected server issue occurred.');
+        setLoading(false);
+      }
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const scheduledStart = buildScheduledTimestamp(form.date, form.startTime);
-      const scheduledEnd = buildScheduledTimestamp(form.date, endTime);
-
       const { error: insertError } = await createWorkoutSession({
         trainerId,
         clientId: form.clientId,
@@ -191,7 +326,7 @@ export default function ScheduleSessionScreen() {
         >
           <Ionicons name="chevron-back" size={24} color="#1C1C1E" />
         </TouchableOpacity>
-        <Text style={styles.navTitle}>Schedule Session</Text>
+        <Text style={styles.navTitle}>{isEditMode ? 'Edit Session' : 'Schedule Session'}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -199,19 +334,33 @@ export default function ScheduleSessionScreen() {
         <ActivityIndicator style={{ marginTop: 40 }} />
       ) : (
         <ScrollView contentContainerStyle={styles.formScroll} keyboardShouldPersistTaps="handled">
-          {/* Client picker */}
+          {/* Client picker — read-only once a session exists. Reassigning a
+              session with its own logged history to a different client is
+              misleading (whose workout was it?); delete and recreate covers
+              the "picked the wrong client" case instead. */}
           <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>CLIENT *</Text>
-            <TouchableOpacity
-              style={styles.selectField}
-              onPress={() => setClientPickerVisible(true)}
-              disabled={loading}
-            >
-              <Text style={form.clientId ? styles.selectFieldText : styles.selectFieldPlaceholder}>
-                {form.clientId ? form.clientName : 'Select a client'}
+            <Text style={styles.inputLabel}>CLIENT{!isEditMode ? ' *' : ''}</Text>
+            {isEditMode ? (
+              <View style={[styles.selectField, styles.selectFieldReadOnly]}>
+                <Text style={styles.selectFieldText}>{form.clientName}</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.selectField}
+                onPress={() => setClientPickerVisible(true)}
+                disabled={loading}
+              >
+                <Text style={form.clientId ? styles.selectFieldText : styles.selectFieldPlaceholder}>
+                  {form.clientId ? form.clientName : 'Select a client'}
+                </Text>
+                <Ionicons name="chevron-down" size={18} color="#8E8E93" />
+              </TouchableOpacity>
+            )}
+            {isEditMode && (
+              <Text style={styles.helperText}>
+                Client can't be changed here — delete and recreate the session instead.
               </Text>
-              <Ionicons name="chevron-down" size={18} color="#8E8E93" />
-            </TouchableOpacity>
+            )}
           </View>
 
           {/* Workout type / template picker */}
@@ -297,7 +446,7 @@ export default function ScheduleSessionScreen() {
           </View>
 
           <TouchableOpacity
-            testID="schedule-session-submit"
+            testID={isEditMode ? 'edit-session-submit' : 'schedule-session-submit'}
             style={[styles.submitButton, loading && styles.disabledButton]}
             onPress={handleSave}
             disabled={loading}
@@ -305,7 +454,7 @@ export default function ScheduleSessionScreen() {
             {loading ? (
               <ActivityIndicator size="small" color="#FFF" />
             ) : (
-              <Text style={styles.submitButtonText}>Schedule Session</Text>
+              <Text style={styles.submitButtonText}>{isEditMode ? 'Save Changes' : 'Schedule Session'}</Text>
             )}
           </TouchableOpacity>
         </ScrollView>
@@ -456,6 +605,9 @@ const styles = StyleSheet.create({
   selectFieldPlaceholder: {
     color: '#C7C7CC',
     fontSize: 15,
+  },
+  selectFieldReadOnly: {
+    backgroundColor: '#EDEDF0',
   },
   pillRow: {
     flexDirection: 'row',
