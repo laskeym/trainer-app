@@ -14,29 +14,31 @@ import { getExercisesForTrainer, createExercise } from '../../lib/queries/exerci
 
 // Real drag gestures can't be simulated via fireEvent in this test
 // environment, so replace the library with a plain-list stand-in and expose
-// its onDragEnd callback for tests to call directly — same approach as
+// its onReordered callback for tests to call directly — same approach as
 // mocking Alert.alert elsewhere in this suite for native-only interactions.
-const mockDragEndRef = { current: null };
+const mockOnReorderedRef = { current: null };
 
-jest.mock('react-native-draggable-flatlist', () => {
+jest.mock('react-native-draglist', () => {
   const React = require('react');
   const { View } = require('react-native');
   return {
-    NestableScrollContainer: ({ children }) => React.createElement(View, null, children),
-    ScaleDecorator: ({ children }) => children,
-    NestableDraggableFlatList: ({ data, renderItem, keyExtractor, onDragEnd, ListEmptyComponent }) => {
-      mockDragEndRef.current = onDragEnd;
-      if (!data || data.length === 0) return ListEmptyComponent || null;
+    __esModule: true,
+    default: ({ data, renderItem, keyExtractor, onReordered, ListHeaderComponent, ListEmptyComponent, ListFooterComponent }) => {
+      mockOnReorderedRef.current = onReordered;
       return React.createElement(
         View,
         null,
-        data.map((item) =>
-          React.createElement(
-            React.Fragment,
-            { key: keyExtractor(item) },
-            renderItem({ item, drag: () => {}, isActive: false })
-          )
-        )
+        ListHeaderComponent || null,
+        !data || data.length === 0
+          ? ListEmptyComponent || null
+          : data.map((item, index) =>
+              React.createElement(
+                React.Fragment,
+                { key: keyExtractor(item, index) },
+                renderItem({ item, index, onDragStart: () => {}, onDragEnd: () => {}, isActive: false })
+              )
+            ),
+        ListFooterComponent || null
       );
     },
   };
@@ -224,20 +226,20 @@ describe('Template Editor Screen', () => {
     expect(queryByText('Squat')).toBeNull();
   });
 
-  it('persists the new order when a drag-end reorder occurs', async () => {
+  it('persists the new order when a reorder occurs', async () => {
     reorderTemplateExercises.mockResolvedValue({ error: null });
 
     const { findByText } = await render(<TemplateEditorScreen />);
 
     // Wait for the initial render to settle before invoking the mocked
-    // library's onDragEnd directly (real drag gestures can't be simulated
-    // via fireEvent — see the react-native-draggable-flatlist mock above).
+    // library's onReordered directly (real drag gestures can't be
+    // simulated via fireEvent — see the react-native-draglist mock above).
     await findByText('Squat');
 
-    const reordered = [MOCK_TEMPLATE.exercises[1], MOCK_TEMPLATE.exercises[0]];
-
+    // Moving the item at index 0 (Squat/te-1) to index 1 swaps the two:
+    // [te-1, te-2] -> [te-2, te-1].
     await act(async () => {
-      mockDragEndRef.current({ data: reordered });
+      mockOnReorderedRef.current(0, 1);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 

@@ -2,31 +2,60 @@ import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  ScrollView,
+  Modal,
+  FlatList,
+  Pressable,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import DragList, { DragListRenderItemInfo } from 'react-native-draglist';
 import { useAuth } from '../../lib/AuthContext';
+import { supabase } from '../../lib/supabase';
 import {
   getWorkoutSessionDetails,
   ensureSessionExercises,
   getSessionExercises,
+  addSessionExercise,
+  removeSessionExercise,
+  reorderSessionExercises,
   updateWorkoutSessionStatus,
   deleteWorkoutSession,
   WorkoutSessionStatus,
 } from '../../lib/queries/sessions';
 import { getSetLogSummariesForSession } from '../../lib/queries/setLogs';
+import { getExercisesForTrainer, createExercise } from '../../lib/queries/exercises';
+import { getSuggestedMuscleGroups } from '../../lib/dayTypeSuggestions';
 
+// The template-sourced plan preview (from getWorkoutSessionDetails) — used
+// only to look up each exercise's original target_sets/target_reps, since
+// those columns only ever exist on TemplateExercise, never on
+// SessionExercise. The live, editable exercise list the trainer actually
+// sees and reorders is LiveSessionExercise below.
 type SessionExercise = {
   id: string;
   order: number;
   target_sets: number | null;
   target_reps: number | null;
+  exercise: {
+    id: string;
+    name: string;
+    muscle_group: string | null;
+    equipment: string | null;
+  } | null;
+};
+
+// This session's real, independently-editable exercise rows (from
+// getSessionExercises) — what SCRUM-31 adds/removes/reorders, distinct
+// from the template's static plan.
+type LiveSessionExercise = {
+  id: string;
+  order: number;
   exercise: {
     id: string;
     name: string;
@@ -68,9 +97,16 @@ function formatStatus(status: string) {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function formatTarget(item: SessionExercise) {
-  const sets = item.target_sets;
-  const reps = item.target_reps;
+type TemplateTarget = { target_sets: number | null; target_reps: number | null };
+
+// Target info (target_sets/target_reps) only ever exists on a
+// TemplateExercise row, by schema design — never on a SessionExercise row.
+// An exercise the trainer added ad-hoc to this specific session has no
+// such row at all, so it simply has no target to show, the same as a
+// template exercise whose target fields were left blank.
+function formatTarget(target: TemplateTarget | undefined) {
+  if (!target) return 'No target assigned';
+  const { target_sets: sets, target_reps: reps } = target;
 
   if (sets != null && reps != null) return `${sets} sets × ${reps} reps`;
   if (sets != null) return `${sets} sets`;
@@ -107,8 +143,8 @@ type ExerciseProgress = {
  * sets per session independently of the template now, so that's the more
  * accurate "out of how many" figure.
  */
-function formatProgress(item: SessionExercise, progress: ExerciseProgress | undefined) {
-  if (!progress || !progress.hasAnyActivity) return formatTarget(item);
+function formatProgress(target: TemplateTarget | undefined, progress: ExerciseProgress | undefined) {
+  if (!progress || !progress.hasAnyActivity) return formatTarget(target);
 
   const base = `${progress.completedCount}/${progress.totalCount} sets logged`;
   return progress.summaryText ? `${base} \u00b7 ${progress.summaryText}` : base;
@@ -128,16 +164,43 @@ export default function SessionDetailScreen() {
   const [details, setDetails] = useState<SessionDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Maps exercise_id -> session_exercise.id once the SessionExercise
-  // snapshot is materialized, so tapping an exercise card knows which real
-  // row to send the trainer to log sets against (see ensureSessionExercises).
-  const [sessionExerciseMap, setSessionExerciseMap] = useState<Record<string, string>>({});
+  // This session's real, independently-editable exercise list (from
+  // getSessionExercises) — authoritative for rendering, reordering, and
+  // navigating into the set-logging screen. Replaces the old
+  // exercise_id -> session_exercise.id map now that the live rows
+  // themselves (with their real ids) are what gets rendered.
+  const [sessionExercises, setSessionExercises] = useState<LiveSessionExercise[]>([]);
+  // Maps exercise_id -> the target_sets/target_reps that exercise had on
+  // the template, purely for display — an exercise added ad-hoc to this
+  // session specifically (not from the template) simply has no entry here.
+  const [targetLookup, setTargetLookup] = useState<Record<string, TemplateTarget>>({});
   // Maps exercise_id -> what's actually been logged this session, so the
   // exercise list can show real progress instead of the static template
   // target once logging has started (see formatProgress).
   const [progressMap, setProgressMap] = useState<Record<string, ExerciseProgress>>({});
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // Exercise picker state — mirrors app/templates/[id]/index.tsx's picker
+  // (same library search + "Suggested for <name>" grouping + inline
+  // custom-exercise creation), applied to this session's live plan instead
+  // of a template's. Kept as a separate, near-duplicate implementation
+  // rather than extracting a shared component, to avoid touching the
+  // already-tested template editor while building this.
+  const [pickerVisible, setPickerVisible] = useState(false);
+  const [library, setLibrary] = useState<any[]>([]);
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [addingExerciseId, setAddingExerciseId] = useState<string | null>(null);
+  const [showCustomForm, setShowCustomForm] = useState(false);
+  const [customExercise, setCustomExercise] = useState({ name: '', muscleGroup: '', equipment: '' });
+  const [creatingCustom, setCreatingCustom] = useState(false);
+
+  // Gates reorder/delete/add on the Workout Plan behind an explicit "Edit"
+  // toggle — those affordances sitting visible by default made it too easy
+  // to brush the trash icon or drag handle while just scrolling/tapping
+  // into exercises to log sets. Off by default; purely local UI state, not
+  // persisted or reset by loadSession.
+  const [planEditMode, setPlanEditMode] = useState(false);
 
   const loadSession = useCallback(async () => {
     if (!session || !id) {
@@ -158,21 +221,30 @@ export default function SessionDetailScreen() {
       setError(queryError.message);
       setDetails(null);
     } else {
-      setDetails(data as SessionDetails);
+      const sessionData = data as unknown as SessionDetails;
+      setDetails(sessionData);
+
+      // The template-sourced plan preview still tells us each exercise's
+      // original target_sets/target_reps (those columns never exist on
+      // SessionExercise itself) — keep that as a lookup for display, even
+      // though the template-sourced list is no longer what gets rendered.
+      const targets: Record<string, TemplateTarget> = {};
+      sessionData.exercises.forEach((ex) => {
+        if (ex.exercise?.id) {
+          targets[ex.exercise.id] = { target_sets: ex.target_sets, target_reps: ex.target_reps };
+        }
+      });
+      setTargetLookup(targets);
 
       // Materialize (once) the real SessionExercise rows this session needs
-      // for set logging / live editing, then map exercise_id -> its row id
-      // so exercise cards below know where to navigate on tap. A failure
-      // here shouldn't block viewing the plan — it just means tapping an
-      // exercise won't navigate yet, which is handled gracefully below.
-      const templateId = (data as SessionDetails).day_type_template?.id ?? null;
+      // for set logging / live editing, then load them as the authoritative,
+      // independently-editable plan this screen now renders, reorders, and
+      // adds/removes exercises from. A failure here shouldn't block viewing
+      // the rest of the session — it just means the plan list stays empty.
+      const templateId = sessionData.day_type_template?.id ?? null;
       await ensureSessionExercises(id, templateId);
-      const { data: sessionExercises } = await getSessionExercises(id);
-      const map: Record<string, string> = {};
-      (sessionExercises ?? []).forEach((se: any) => {
-        if (se.exercise?.id) map[se.exercise.id] = se.id;
-      });
-      setSessionExerciseMap(map);
+      const { data: liveExercises } = await getSessionExercises(id);
+      setSessionExercises((liveExercises ?? []) as unknown as LiveSessionExercise[]);
 
       const { data: summaries } = await getSetLogSummariesForSession(id);
       const progress: Record<string, ExerciseProgress> = {};
@@ -225,6 +297,160 @@ export default function SessionDetailScreen() {
       loadSession();
     }, [loadSession])
   );
+
+  const handleExercisesReordered = async (fromIndex: number, toIndex: number) => {
+    const reordered = [...sessionExercises];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+
+    // Update locally right away so the reorder feels instant, then persist.
+    setSessionExercises(reordered);
+
+    try {
+      const { error } = await reorderSessionExercises(reordered.map((ex) => ({ id: ex.id })));
+      if (error) throw error;
+    } catch (err: any) {
+      console.error('❌ Failed to persist exercise order:', err.message);
+      Alert.alert('Reorder Failed', err.message || 'An unexpected server issue occurred.');
+      loadSession(); // fall back to the server's actual order
+    }
+  };
+
+  const handleRemoveExercise = (sessionExerciseId: string) => {
+    Alert.alert(
+      'Remove Exercise',
+      'Remove this exercise from today\u2019s workout plan? Any sets already logged for it will be deleted too.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { error } = await removeSessionExercise(sessionExerciseId);
+              if (error) throw error;
+              setSessionExercises((prev) => prev.filter((ex) => ex.id !== sessionExerciseId));
+            } catch (err: any) {
+              console.error('❌ Failed to remove exercise:', err.message);
+              Alert.alert('Remove Failed', err.message || 'An unexpected server issue occurred.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const openPicker = async () => {
+    setPickerVisible(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data, error } = await getExercisesForTrainer(user.id);
+      if (error) throw error;
+      setLibrary(data ?? []);
+    } catch (err: any) {
+      console.error('❌ Failed to load exercise library:', err.message);
+      Alert.alert('Couldn\u2019t Load Exercises', err.message || 'An unexpected server issue occurred.');
+    }
+  };
+
+  const filteredLibrary = library.filter((ex) =>
+    ex.name?.toLowerCase().includes(librarySearch.toLowerCase())
+  );
+
+  // Same "Suggested for <name>" grouping as the template editor's picker,
+  // keyed off the assigned template's name if there is one. A session with
+  // no template just gets a flat, ungrouped list — same fallback the
+  // template editor uses for a template name matching no known keyword.
+  type PickerRow =
+    | { type: 'header'; key: string; label: string }
+    | { type: 'exercise'; key: string; exercise: any };
+
+  const pickerRows: PickerRow[] = (() => {
+    const templateName = details?.day_type_template?.name;
+    const suggestedGroups = templateName ? getSuggestedMuscleGroups(templateName) : [];
+    if (suggestedGroups.length === 0) {
+      return filteredLibrary.map((ex) => ({ type: 'exercise' as const, key: ex.id, exercise: ex }));
+    }
+
+    const suggested = filteredLibrary.filter(
+      (ex) => ex.muscle_group && suggestedGroups.includes(ex.muscle_group)
+    );
+    const suggestedIds = new Set(suggested.map((ex) => ex.id));
+    const others = filteredLibrary.filter((ex) => !suggestedIds.has(ex.id));
+
+    if (suggested.length === 0) {
+      return others.map((ex) => ({ type: 'exercise' as const, key: ex.id, exercise: ex }));
+    }
+
+    const rows: PickerRow[] = [
+      { type: 'header', key: 'header-suggested', label: `Suggested for ${templateName}` },
+      ...suggested.map((ex) => ({ type: 'exercise' as const, key: ex.id, exercise: ex })),
+    ];
+    if (others.length > 0) {
+      rows.push({ type: 'header', key: 'header-all', label: 'All Exercises' });
+      rows.push(...others.map((ex) => ({ type: 'exercise' as const, key: ex.id, exercise: ex })));
+    }
+    return rows;
+  })();
+
+  const handleAddExercise = async (exerciseId: string) => {
+    if (!details) return;
+    setAddingExerciseId(exerciseId);
+    try {
+      const nextOrder = sessionExercises.length;
+      const { data, error } = await addSessionExercise({
+        sessionId: details.id,
+        exerciseId,
+        order: nextOrder,
+        dayTypeTemplateId: details.day_type_template?.id ?? null,
+      });
+      if (error) throw error;
+
+      setSessionExercises((prev) => [...prev, data as unknown as LiveSessionExercise]);
+      setPickerVisible(false);
+      setLibrarySearch('');
+    } catch (err: any) {
+      console.error('❌ Failed to add exercise to session:', err.message);
+      Alert.alert('Add Failed', err.message || 'An unexpected server issue occurred.');
+    } finally {
+      setAddingExerciseId(null);
+    }
+  };
+
+  const handleCreateCustomExercise = async () => {
+    if (!customExercise.name.trim()) {
+      Alert.alert('Required Field', 'Please enter a name for the exercise.');
+      return;
+    }
+
+    setCreatingCustom(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Authenticated trainer session not found.');
+
+      const { data, error } = await createExercise({
+        trainerId: user.id,
+        name: customExercise.name.trim(),
+        muscleGroup: customExercise.muscleGroup.trim() || null,
+        equipment: customExercise.equipment.trim() || null,
+      });
+      if (error) throw error;
+
+      setLibrary((prev) => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
+      setCustomExercise({ name: '', muscleGroup: '', equipment: '' });
+      setShowCustomForm(false);
+
+      // Go straight from "created" to "added to this session" — a custom
+      // exercise the trainer just typed in has nowhere else useful to sit.
+      await handleAddExercise(data.id);
+    } catch (err: any) {
+      console.error('❌ Failed to create custom exercise:', err.message);
+      Alert.alert('Creation Failed', err.message || 'An unexpected server issue occurred.');
+    } finally {
+      setCreatingCustom(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -334,162 +560,331 @@ export default function SessionDetailScreen() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.hero}>
-          <Text style={styles.clientName}>{details.client?.name ?? 'Client'}</Text>
-          <Text style={styles.templateName}>
-            {details.day_type_template?.name ?? 'Workout Session'}
-          </Text>
-          <View style={[styles.statusPill, { backgroundColor: statusStyle.background }]}>
-            <Text style={[styles.statusText, { color: statusStyle.text }]}>{formatStatus(details.status)}</Text>
-          </View>
-
-          <View style={styles.statusActions}>
-            {details.status === 'planned' && (
-              <TouchableOpacity
-                style={styles.primaryStatusButton}
-                onPress={() => handleStatusChange('in_progress')}
-                disabled={statusUpdating}
-                testID="start-workout-button"
-              >
-                <Text style={styles.primaryStatusButtonText}>Start Workout</Text>
-              </TouchableOpacity>
-            )}
-            {details.status === 'in_progress' && (
-              <TouchableOpacity
-                style={styles.primaryStatusButton}
-                onPress={() => handleStatusChange('completed')}
-                disabled={statusUpdating}
-                testID="mark-complete-button"
-              >
-                <Text style={styles.primaryStatusButtonText}>Mark Complete</Text>
-              </TouchableOpacity>
-            )}
-            {details.status === 'completed' && (
-              <TouchableOpacity
-                style={styles.secondaryStatusButton}
-                onPress={() => handleStatusChange('in_progress')}
-                disabled={statusUpdating}
-                testID="reopen-session-button"
-              >
-                <Text style={styles.secondaryStatusButtonText}>Reopen Session</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-
-        <View style={styles.detailsCard}>
-          <View style={styles.detailRow}>
-            <Ionicons name="calendar-outline" size={20} color="#636366" />
-            <View style={styles.detailTextWrap}>
-              <Text style={styles.detailLabel}>DATE</Text>
-              <Text style={styles.detailValue}>{formatSessionDate(details.scheduled_start)}</Text>
-            </View>
-          </View>
-
-          <View style={styles.detailRow}>
-            <Ionicons name="time-outline" size={20} color="#636366" />
-            <View style={styles.detailTextWrap}>
-              <Text style={styles.detailLabel}>TIME</Text>
-              <Text style={styles.detailValue}>
-                {formatTimeRange(details.scheduled_start, details.scheduled_end)}
+      {/* DragList is FlatList-based, so everything that used to sit around
+          the exercise list inside a plain ScrollView now lives in
+          ListHeaderComponent/ListFooterComponent instead — nesting a
+          FlatList inside a ScrollView breaks virtualization and triggers
+          React Native's own warning against it. Same restructuring already
+          applied to the template editor screen. */}
+      <DragList
+        data={sessionExercises}
+        keyExtractor={(ex: LiveSessionExercise) => ex.id}
+        onReordered={handleExercisesReordered}
+        contentContainerStyle={styles.content}
+        ListHeaderComponent={
+          <>
+            <View style={styles.hero}>
+              <Text style={styles.clientName}>{details.client?.name ?? 'Client'}</Text>
+              <Text style={styles.templateName}>
+                {details.day_type_template?.name ?? 'Workout Session'}
               </Text>
-            </View>
-          </View>
+              <View style={[styles.statusPill, { backgroundColor: statusStyle.background }]}>
+                <Text style={[styles.statusText, { color: statusStyle.text }]}>{formatStatus(details.status)}</Text>
+              </View>
 
-          {details.location ? (
-            <View style={styles.detailRow}>
-              <Ionicons name="location-outline" size={20} color="#636366" />
-              <View style={styles.detailTextWrap}>
-                <Text style={styles.detailLabel}>LOCATION</Text>
-                <Text style={styles.detailValue}>{details.location}</Text>
+              <View style={styles.statusActions}>
+                {details.status === 'planned' && (
+                  <TouchableOpacity
+                    style={styles.primaryStatusButton}
+                    onPress={() => handleStatusChange('in_progress')}
+                    disabled={statusUpdating}
+                    testID="start-workout-button"
+                  >
+                    <Text style={styles.primaryStatusButtonText}>Start Workout</Text>
+                  </TouchableOpacity>
+                )}
+                {details.status === 'in_progress' && (
+                  <TouchableOpacity
+                    style={styles.primaryStatusButton}
+                    onPress={() => handleStatusChange('completed')}
+                    disabled={statusUpdating}
+                    testID="mark-complete-button"
+                  >
+                    <Text style={styles.primaryStatusButtonText}>Mark Complete</Text>
+                  </TouchableOpacity>
+                )}
+                {details.status === 'completed' && (
+                  <TouchableOpacity
+                    style={styles.secondaryStatusButton}
+                    onPress={() => handleStatusChange('in_progress')}
+                    disabled={statusUpdating}
+                    testID="reopen-session-button"
+                  >
+                    <Text style={styles.secondaryStatusButtonText}>Reopen Session</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
-          ) : null}
-        </View>
 
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>WORKOUT PLAN</Text>
-          {hasTemplate ? (
-            <Text style={styles.exerciseCount}>
-              {details.exercises.length} {details.exercises.length === 1 ? 'exercise' : 'exercises'}
-            </Text>
-          ) : null}
-        </View>
+            <View style={styles.detailsCard}>
+              <View style={styles.detailRow}>
+                <Ionicons name="calendar-outline" size={20} color="#636366" />
+                <View style={styles.detailTextWrap}>
+                  <Text style={styles.detailLabel}>DATE</Text>
+                  <Text style={styles.detailValue}>{formatSessionDate(details.scheduled_start)}</Text>
+                </View>
+              </View>
 
-        {!hasTemplate ? (
+              <View style={styles.detailRow}>
+                <Ionicons name="time-outline" size={20} color="#636366" />
+                <View style={styles.detailTextWrap}>
+                  <Text style={styles.detailLabel}>TIME</Text>
+                  <Text style={styles.detailValue}>
+                    {formatTimeRange(details.scheduled_start, details.scheduled_end)}
+                  </Text>
+                </View>
+              </View>
+
+              {details.location ? (
+                <View style={styles.detailRow}>
+                  <Ionicons name="location-outline" size={20} color="#636366" />
+                  <View style={styles.detailTextWrap}>
+                    <Text style={styles.detailLabel}>LOCATION</Text>
+                    <Text style={styles.detailValue}>{details.location}</Text>
+                  </View>
+                </View>
+              ) : null}
+            </View>
+
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>WORKOUT PLAN</Text>
+              <View style={styles.sectionHeaderRight}>
+                <Text style={styles.exerciseCount}>
+                  {sessionExercises.length} {sessionExercises.length === 1 ? 'exercise' : 'exercises'}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setPlanEditMode((prev) => !prev)}
+                  style={styles.planEditToggle}
+                  testID="plan-edit-toggle"
+                >
+                  <Text style={styles.planEditToggleText}>{planEditMode ? 'Done' : 'Edit'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Exercises can now be added to a session regardless of
+                whether it has a template — this is just context, not a
+                blocker, so it's a small note rather than the whole-section
+                empty state it used to be. */}
+            {!hasTemplate && (
+              <Text style={styles.noTemplateNote}>
+                No workout template assigned — exercises below were built for this session only.
+              </Text>
+            )}
+          </>
+        }
+        ListEmptyComponent={
           <View style={styles.emptyPlan}>
             <Ionicons name="fitness-outline" size={36} color="#8E8E93" />
-            <Text style={styles.emptyPlanTitle}>No workout template assigned</Text>
+            <Text style={styles.emptyPlanTitle}>No exercises yet</Text>
             <Text style={styles.emptyPlanMessage}>
-              This session was scheduled without a workout template.
+              {planEditMode
+                ? "Add an exercise below to build today's workout plan."
+                : 'Tap Edit above to add exercises to this plan.'}
             </Text>
           </View>
-        ) : details.exercises.length === 0 ? (
-          <View style={styles.emptyPlan}>
-            <Ionicons name="list-outline" size={36} color="#8E8E93" />
-            <Text style={styles.emptyPlanTitle}>This template has no exercises</Text>
-            <Text style={styles.emptyPlanMessage}>
-              Add exercises to the template before running this workout.
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.exerciseList}>
-            {details.exercises.map((item, index) => {
-              const sessionExerciseId = item.exercise?.id ? sessionExerciseMap[item.exercise.id] : undefined;
-              const progress = item.exercise?.id ? progressMap[item.exercise.id] : undefined;
-              return (
-                <TouchableOpacity
-                  key={item.id}
-                  style={styles.exerciseCard}
-                  activeOpacity={0.7}
-                  disabled={!sessionExerciseId}
-                  testID={`exercise-card-${item.id}`}
-                  onPress={() => {
-                    if (!sessionExerciseId) return;
-                    router.push({
-                      pathname: `/session/${details.id}/exercise/${sessionExerciseId}`,
-                      params: {
-                        exerciseName: item.exercise?.name ?? 'Exercise',
-                        targetSets: item.target_sets != null ? String(item.target_sets) : '',
-                        targetReps: item.target_reps != null ? String(item.target_reps) : '',
-                        clientId: details.client?.id ?? '',
-                        exerciseId: item.exercise?.id ?? '',
-                        sessionStatus: details.status,
-                      },
-                    });
-                  }}
-                >
-                  <View style={[styles.exerciseNumber, progress?.allCompleted && styles.exerciseNumberComplete]}>
-                    {progress?.allCompleted ? (
-                      <Ionicons name="checkmark" size={16} color="#FFF" />
-                    ) : (
-                      <Text style={styles.exerciseNumberText}>{index + 1}</Text>
-                    )}
-                  </View>
-                  <View style={styles.exerciseInfo}>
-                    <Text style={styles.exerciseName}>{item.exercise?.name ?? 'Exercise'}</Text>
-                    {item.exercise?.muscle_group ? (
-                      <Text style={styles.exerciseMeta}>{item.exercise.muscle_group}</Text>
-                    ) : null}
-                    <Text style={styles.exerciseTarget}>
-                      {formatProgress(item, progress)}
-                    </Text>
-                    {progress?.allCompleted && (
-                      <View style={styles.exerciseCompletePill} testID={`exercise-complete-${item.id}`}>
-                        <Ionicons name="checkmark-circle" size={12} color="#1D7A34" />
-                        <Text style={styles.exerciseCompletePillText}>Exercise Complete</Text>
-                      </View>
-                    )}
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        )}
+        }
+        ListFooterComponent={
+          planEditMode ? (
+            <TouchableOpacity style={styles.addExerciseButton} onPress={openPicker}>
+              <Ionicons name="add-circle" size={18} color="#1C1C1E" />
+              <Text style={styles.addExerciseText}>Add Exercise</Text>
+            </TouchableOpacity>
+          ) : null
+        }
+        renderItem={({ item: ex, index, onDragStart, onDragEnd, isActive }: DragListRenderItemInfo<LiveSessionExercise>) => {
+          const target = ex.exercise?.id ? targetLookup[ex.exercise.id] : undefined;
+          const progress = ex.exercise?.id ? progressMap[ex.exercise.id] : undefined;
+          return (
+            <View
+              style={[styles.exerciseCard, isActive && styles.exerciseCardActive]}
+              testID={`exercise-card-${ex.id}`}
+            >
+              <TouchableOpacity
+                style={styles.exerciseCardBody}
+                activeOpacity={0.7}
+                testID={`exercise-card-body-${ex.id}`}
+                onPress={() => {
+                  router.push({
+                    pathname: `/session/${details.id}/exercise/${ex.id}`,
+                    params: {
+                      exerciseName: ex.exercise?.name ?? 'Exercise',
+                      targetSets: target?.target_sets != null ? String(target.target_sets) : '',
+                      targetReps: target?.target_reps != null ? String(target.target_reps) : '',
+                      clientId: details.client?.id ?? '',
+                      exerciseId: ex.exercise?.id ?? '',
+                      sessionStatus: details.status,
+                    },
+                  });
+                }}
+              >
+                <View style={[styles.exerciseNumber, progress?.allCompleted && styles.exerciseNumberComplete]}>
+                  {progress?.allCompleted ? (
+                    <Ionicons name="checkmark" size={16} color="#FFF" />
+                  ) : (
+                    <Text style={styles.exerciseNumberText}>{index + 1}</Text>
+                  )}
+                </View>
+                <View style={styles.exerciseInfo}>
+                  <Text style={styles.exerciseName}>{ex.exercise?.name ?? 'Exercise'}</Text>
+                  {ex.exercise?.muscle_group ? (
+                    <Text style={styles.exerciseMeta}>{ex.exercise.muscle_group}</Text>
+                  ) : null}
+                  <Text style={styles.exerciseTarget}>
+                    {formatProgress(target, progress)}
+                  </Text>
+                  {progress?.allCompleted && (
+                    <View style={styles.exerciseCompletePill} testID={`exercise-complete-${ex.id}`}>
+                      <Ionicons name="checkmark-circle" size={12} color="#1D7A34" />
+                      <Text style={styles.exerciseCompletePillText}>Exercise Complete</Text>
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
 
-      </ScrollView>
+              {planEditMode ? (
+                <>
+                  {/* Press and hold to pick the row up — keeps drag
+                      activation away from the tap-to-navigate body and the
+                      remove button. onPressOut must fire onDragEnd even on
+                      a plain tap (no movement), or DragList never learns
+                      the gesture ended. */}
+                  <TouchableOpacity
+                    onPressIn={onDragStart}
+                    onPressOut={onDragEnd}
+                    style={styles.dragHandle}
+                    testID={`drag-handle-${ex.id}`}
+                  >
+                    <Ionicons name="reorder-three-outline" size={22} color="#8E8E93" />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.removeExerciseButton}
+                    onPress={() => handleRemoveExercise(ex.id)}
+                    testID={`remove-exercise-${ex.id}`}
+                  >
+                    <Ionicons name="trash-outline" size={18} color="#FF3B30" />
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <Ionicons name="chevron-forward" size={18} color="#C7C7CC" style={styles.exerciseChevron} />
+              )}
+            </View>
+          );
+        }}
+      />
+
+      {/* Exercise picker modal — same library search + "Suggested for
+          <name>" grouping + inline custom-exercise creation as the
+          template editor's picker, applied to this session's live plan. */}
+      <Modal
+        visible={pickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPickerVisible(false)}
+      >
+        <Pressable style={styles.backdrop} onPress={() => setPickerVisible(false)}>
+          <Pressable style={styles.pickerSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Add Exercise</Text>
+              <TouchableOpacity onPress={() => setPickerVisible(false)} style={styles.closeButton}>
+                <Ionicons name="close" size={22} color="#8E8E93" />
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              placeholder="Search exercises..."
+              placeholderTextColor="#C7C7CC"
+              style={styles.searchInput}
+              value={librarySearch}
+              onChangeText={setLibrarySearch}
+            />
+
+            <FlatList
+              data={pickerRows}
+              keyExtractor={(row) => row.key}
+              style={styles.pickerList}
+              renderItem={({ item: row }) => {
+                if (row.type === 'header') {
+                  return <Text style={styles.pickerSectionHeader}>{row.label}</Text>;
+                }
+
+                const item = row.exercise;
+                return (
+                  <TouchableOpacity
+                    style={styles.pickerRow}
+                    onPress={() => handleAddExercise(item.id)}
+                    disabled={addingExerciseId !== null}
+                  >
+                    <View>
+                      <Text style={styles.pickerRowText}>{item.name}</Text>
+                      {(item.muscle_group || item.equipment) && (
+                        <Text style={styles.pickerRowSubtitle}>
+                          {[item.muscle_group, item.equipment].filter(Boolean).join(' \u2022 ')}
+                        </Text>
+                      )}
+                    </View>
+                    {addingExerciseId === item.id ? (
+                      <ActivityIndicator size="small" color="#1C1C1E" />
+                    ) : (
+                      <Ionicons name="add" size={20} color="#1C1C1E" />
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={<Text style={styles.emptyListText}>No exercises found.</Text>}
+            />
+
+            {showCustomForm ? (
+              <View style={styles.customForm}>
+                <TextInput
+                  placeholder="Exercise name"
+                  placeholderTextColor="#C7C7CC"
+                  style={styles.customInput}
+                  value={customExercise.name}
+                  onChangeText={(v) => setCustomExercise((p) => ({ ...p, name: v }))}
+                  editable={!creatingCustom}
+                />
+                <View style={styles.customInputRow}>
+                  <TextInput
+                    placeholder="Muscle group"
+                    placeholderTextColor="#C7C7CC"
+                    style={[styles.customInput, styles.customInputHalf]}
+                    value={customExercise.muscleGroup}
+                    onChangeText={(v) => setCustomExercise((p) => ({ ...p, muscleGroup: v }))}
+                    editable={!creatingCustom}
+                  />
+                  <TextInput
+                    placeholder="Equipment"
+                    placeholderTextColor="#C7C7CC"
+                    style={[styles.customInput, styles.customInputHalf]}
+                    value={customExercise.equipment}
+                    onChangeText={(v) => setCustomExercise((p) => ({ ...p, equipment: v }))}
+                    editable={!creatingCustom}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={[styles.customSubmitButton, creatingCustom && styles.disabledButton]}
+                  onPress={handleCreateCustomExercise}
+                  disabled={creatingCustom}
+                  testID="create-custom-exercise-submit"
+                >
+                  {creatingCustom ? (
+                    <ActivityIndicator size="small" color="#FFF" />
+                  ) : (
+                    <Text style={styles.customSubmitText}>Create & Add</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.customToggle} onPress={() => setShowCustomForm(true)}>
+                <Ionicons name="add-circle-outline" size={16} color="#1C1C1E" />
+                <Text style={styles.customToggleText}>Can't find it? Create a custom exercise</Text>
+              </TouchableOpacity>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -553,14 +948,197 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 },
   sectionTitle: { fontSize: 12, fontWeight: '700', letterSpacing: 0.8, color: '#8E8E93' },
   exerciseCount: { fontSize: 13, color: '#8E8E93' },
+  sectionHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  planEditToggle: { paddingVertical: 2, paddingHorizontal: 4 },
+  planEditToggleText: { fontSize: 13, fontWeight: '700', color: '#1C1C1E' },
+  exerciseChevron: { marginLeft: 4 },
   exerciseList: { gap: 12 },
   exerciseCard: {
     backgroundColor: '#FFF',
     borderRadius: 18,
     padding: 16,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  exerciseCardActive: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 6,
+  },
+  exerciseCardBody: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
+  },
+  dragHandle: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  removeExerciseButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFF0EF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  noTemplateNote: {
+    fontSize: 13,
+    color: '#8E8E93',
+    fontStyle: 'italic',
+    marginBottom: 12,
+  },
+  addExerciseButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#FFF',
+    borderRadius: 14,
+    height: 52,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    borderStyle: 'dashed',
+  },
+  addExerciseText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1C1C1E',
+  },
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  pickerSheet: {
+    backgroundColor: '#FFF',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 32,
+    maxHeight: '80%',
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  sheetTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#1C1C1E',
+  },
+  closeButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#F2F2F7',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  searchInput: {
+    backgroundColor: '#F2F2F7',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    height: 44,
+    color: '#1C1C1E',
+    fontSize: 15,
+    marginBottom: 8,
+  },
+  pickerList: {
+    marginTop: 4,
+    maxHeight: 260,
+  },
+  pickerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F2F2F7',
+  },
+  pickerRowText: {
+    fontSize: 15,
+    color: '#1C1C1E',
+    fontWeight: '500',
+  },
+  pickerRowSubtitle: {
+    fontSize: 12,
+    color: '#8E8E93',
+    marginTop: 2,
+  },
+  pickerSectionHeader: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#8E8E93',
+    letterSpacing: 0.5,
+    paddingTop: 12,
+    paddingBottom: 6,
+  },
+  emptyListText: {
+    textAlign: 'center',
+    color: '#8E8E93',
+    paddingVertical: 24,
+  },
+  customToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingTop: 16,
+  },
+  customToggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1C1C1E',
+  },
+  customForm: {
+    paddingTop: 16,
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F2F2F7',
+    marginTop: 8,
+  },
+  customInput: {
+    backgroundColor: '#F2F2F7',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    height: 44,
+    color: '#1C1C1E',
+    fontSize: 15,
+  },
+  customInputRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  customInputHalf: {
+    flex: 1,
+  },
+  customSubmitButton: {
+    backgroundColor: '#1C1C1E',
+    height: 48,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  disabledButton: {
+    backgroundColor: '#3A3A3C',
+    opacity: 0.7,
+  },
+  customSubmitText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
   exerciseNumber: {
     width: 34,
