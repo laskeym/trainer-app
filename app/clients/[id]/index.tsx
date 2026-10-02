@@ -1,6 +1,7 @@
 // app/clients/[id]/index.tsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { 
+  Alert,
   StyleSheet, 
   Text, 
   View, 
@@ -9,17 +10,24 @@ import {
   ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { getClientDetailsWithHistory } from '../../../lib/queries/clients';
+import { getClientDetailsWithHistory, deleteClient } from '../../../lib/queries/clients';
 
 export default function ClientProfileDetailsScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<any>(null);
+  const [deleting, setDeleting] = useState(false);
 
-  useEffect(
+  // useFocusEffect (not a plain useEffect) so this refetches every time the
+  // screen regains focus — including when returning from editing the
+  // client profile. Stack screens stay mounted when another screen is
+  // pushed on top, so a plain mount-effect would keep showing the stale
+  // pre-edit name/goals/constraints after saving. Same fix already applied
+  // to the dashboard and session detail screens for the same reason.
+  useFocusEffect(
     useCallback(() => {
       let isMounted = true;
 
@@ -48,6 +56,32 @@ export default function ClientProfileDetailsScreen() {
     );
   }
 
+  const handleDelete = () => {
+    Alert.alert(
+      'Delete Client',
+      `Delete ${profile.name}? This removes their profile, metric history, and every scheduled or logged session. This can't be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              const { error } = await deleteClient(profile.id);
+              if (error) throw error;
+              router.back();
+            } catch (err: any) {
+              console.error('❌ Failed to delete client:', err.message);
+              Alert.alert('Delete Failed', err.message || 'An unexpected server issue occurred.');
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* Custom Navigation Bar */}
@@ -56,9 +90,24 @@ export default function ClientProfileDetailsScreen() {
           <Ionicons name="chevron-back" size={24} color="#1C1C1E" />
         </TouchableOpacity>
         <Text style={styles.navTitle}>Client Profile</Text>
-        <TouchableOpacity style={styles.iconButton}>
-          <Ionicons name="create-outline" size={22} color="#1C1C1E" />
-        </TouchableOpacity>
+        <View style={styles.navActions}>
+          <TouchableOpacity
+            onPress={() => router.push({ pathname: '/clients/new', params: { editClientId: profile.id } })}
+            style={styles.iconButton}
+            disabled={deleting}
+            testID="edit-client-button"
+          >
+            <Ionicons name="pencil-outline" size={20} color="#1C1C1E" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleDelete}
+            style={styles.iconButton}
+            disabled={deleting}
+            testID="delete-client-button"
+          >
+            <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollLayout} showsVerticalScrollIndicator={false}>
@@ -163,6 +212,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF',
     borderBottomWidth: 1,
     borderBottomColor: '#E5E5EA',
+  },
+  navActions: {
+    flexDirection: 'row',
+    gap: 4,
   },
   iconButton: {
     width: 40,

@@ -1,13 +1,14 @@
 import React from 'react';
 import { render, fireEvent, act } from '@testing-library/react-native';
 import AddClientScreen from '../../app/clients/new';
-import { useRouter } from 'expo-router';
-import { createClient } from '../../lib/queries/clients';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { createClient, getClientForEdit, updateClient } from '../../lib/queries/clients';
 
 jest.mock('expo-router', () => ({
   useRouter: jest.fn(() => ({
     back: jest.fn(),
   })),
+  useLocalSearchParams: jest.fn(() => ({})),
 }));
 
 // lib/supabase.ts calls createClient(...) at module scope, which throws
@@ -24,6 +25,8 @@ jest.mock('../../lib/supabase', () => ({
 // same name as the Supabase SDK's createClient, unrelated) — mock our query fn.
 jest.mock('../../lib/queries/clients', () => ({
   createClient: jest.fn(),
+  getClientForEdit: jest.fn(),
+  updateClient: jest.fn(),
 }));
 
 describe('Add Client Profile Form', () => {
@@ -76,5 +79,58 @@ describe('Add Client Profile Form', () => {
     // alert. RN's Alert.alert doesn't do anything in the test environment, so
     // assert on the mocked mutation call instead of the post-alert navigation.
     expect(createClient).toHaveBeenCalled();
+  });
+});
+
+const EXISTING_CLIENT = {
+  id: 'client-1',
+  name: 'Paul Jones',
+  height: 182,
+  fitness_goals: 'Strength training',
+  medical_constraints: 'None',
+};
+
+describe('Edit Client Profile Form', () => {
+  beforeEach(() => {
+    useLocalSearchParams.mockReturnValue({ editClientId: 'client-1' });
+    getClientForEdit.mockResolvedValue({ data: EXISTING_CLIENT, error: null });
+    updateClient.mockResolvedValue({ data: { id: 'client-1' }, error: null });
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('pre-fills the form from the existing client', async () => {
+    const { findByText, findByDisplayValue } = await render(<AddClientScreen />);
+
+    expect(await findByText('Edit Profile')).toBeTruthy();
+    expect(await findByText('Save Changes')).toBeTruthy();
+    expect(await findByDisplayValue('Paul Jones')).toBeTruthy();
+    expect(await findByDisplayValue('182')).toBeTruthy();
+    expect(await findByDisplayValue('Strength training')).toBeTruthy();
+    // medical_constraints of 'None' is the "nothing entered" sentinel, not
+    // literal text to pre-fill into the field.
+    expect(await findByDisplayValue('')).toBeTruthy();
+  });
+
+  it('saves changes via updateClient rather than creating a new client', async () => {
+    const { findByDisplayValue, findByTestId } = await render(<AddClientScreen />);
+
+    const nameInput = await findByDisplayValue('Paul Jones');
+    fireEvent.changeText(nameInput, 'Paul T. Jones');
+
+    const submitButton = await findByTestId('edit-client-submit');
+
+    await act(async () => {
+      fireEvent.press(submitButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(updateClient).toHaveBeenCalledWith('client-1', {
+      name: 'Paul T. Jones',
+      height: 182,
+      fitnessGoals: 'Strength training',
+      medicalConstraints: 'None',
+    });
+    expect(createClient).not.toHaveBeenCalled();
   });
 });
