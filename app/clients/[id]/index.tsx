@@ -2,8 +2,11 @@
 import React, { useState, useCallback } from 'react';
 import { 
   Alert,
+  Modal,
+  Pressable,
   StyleSheet, 
   Text, 
+  TextInput,
   View, 
   ScrollView, 
   TouchableOpacity, 
@@ -12,7 +15,24 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { getClientDetailsWithHistory, deleteClient } from '../../../lib/queries/clients';
+import {
+  getClientDetailsWithHistory,
+  deleteClient,
+  createClientMetric,
+  updateClientMetric,
+  deleteClientMetric,
+} from '../../../lib/queries/clients';
+import MonthCalendarModal from '../../../components/MonthCalendarModal';
+
+function todayIso(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+}
+
+function formatDateLabel(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
 export default function ClientProfileDetailsScreen() {
   const { id } = useLocalSearchParams();
@@ -20,6 +40,24 @@ export default function ClientProfileDetailsScreen() {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<any>(null);
   const [deleting, setDeleting] = useState(false);
+
+  const [metricModalVisible, setMetricModalVisible] = useState(false);
+  const [metricDatePickerVisible, setMetricDatePickerVisible] = useState(false);
+  const [editingMetricId, setEditingMetricId] = useState<string | null>(null);
+  const [metricForm, setMetricForm] = useState({ date: todayIso(), weight: '', bodyFatPct: '' });
+  const [savingMetric, setSavingMetric] = useState(false);
+
+  const fetchFullProfile = useCallback(async () => {
+    try {
+      const { data, error } = await getClientDetailsWithHistory(id as string);
+      if (error) throw error;
+      setProfile(data);
+    } catch (err) {
+      console.error('❌ Error fetching profile history dataset:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
 
   // useFocusEffect (not a plain useEffect) so this refetches every time the
   // screen regains focus — including when returning from editing the
@@ -29,24 +67,85 @@ export default function ClientProfileDetailsScreen() {
   // to the dashboard and session detail screens for the same reason.
   useFocusEffect(
     useCallback(() => {
-      let isMounted = true;
+      fetchFullProfile();
+    }, [fetchFullProfile])
+  );
 
-      async function fetchFullProfile() {
-        try {
-          const { data, error } = await getClientDetailsWithHistory(id as string);
-          if (error) throw error;
-          if (isMounted) setProfile(data);
-        } catch (err) {
-          console.error('❌ Error fetching profile history dataset:', err);
-        } finally {
-          if (isMounted) setLoading(false);
-        }
+  const openLogMetricModal = () => {
+    setEditingMetricId(null);
+    setMetricForm({ date: todayIso(), weight: '', bodyFatPct: '' });
+    setMetricModalVisible(true);
+  };
+
+  const openEditMetricModal = (metric: any) => {
+    setEditingMetricId(metric.id);
+    setMetricForm({
+      date: metric.date,
+      weight: metric.weight != null ? String(metric.weight) : '',
+      bodyFatPct: metric.body_fat_pct != null ? String(metric.body_fat_pct) : '',
+    });
+    setMetricModalVisible(true);
+  };
+
+  const handleSaveMetric = async () => {
+    if (!metricForm.weight.trim() && !metricForm.bodyFatPct.trim()) {
+      Alert.alert('Required Field', 'Enter a weight, body fat percentage, or both.');
+      return;
+    }
+
+    const parsedWeight = metricForm.weight.trim() ? parseFloat(metricForm.weight) : null;
+    const parsedBodyFat = metricForm.bodyFatPct.trim() ? parseFloat(metricForm.bodyFatPct) : null;
+    const safeWeight = isNaN(parsedWeight as number) ? null : parsedWeight;
+    const safeBodyFat = isNaN(parsedBodyFat as number) ? null : parsedBodyFat;
+
+    setSavingMetric(true);
+    try {
+      if (editingMetricId) {
+        const { error } = await updateClientMetric(editingMetricId, {
+          date: metricForm.date,
+          weight: safeWeight,
+          bodyFatPct: safeBodyFat,
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await createClientMetric({
+          clientId: id as string,
+          date: metricForm.date,
+          weight: safeWeight,
+          bodyFatPct: safeBodyFat,
+        });
+        if (error) throw error;
       }
 
-      fetchFullProfile();
-      return () => { isMounted = false; };
-    }, [id])
-  );
+      setMetricModalVisible(false);
+      await fetchFullProfile();
+    } catch (err: any) {
+      console.error('❌ Failed to save metric entry:', err.message);
+      Alert.alert('Save Failed', err.message || 'An unexpected server issue occurred.');
+    } finally {
+      setSavingMetric(false);
+    }
+  };
+
+  const handleDeleteMetric = (metricId: string) => {
+    Alert.alert('Delete Entry', 'Delete this metric log entry? This can\u2019t be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const { error } = await deleteClientMetric(metricId);
+            if (error) throw error;
+            await fetchFullProfile();
+          } catch (err: any) {
+            console.error('❌ Failed to delete metric entry:', err.message);
+            Alert.alert('Delete Failed', err.message || 'An unexpected server issue occurred.');
+          }
+        },
+      },
+    ]);
+  };
 
   if (loading || !profile) {
     return (
@@ -156,7 +255,7 @@ export default function ClientProfileDetailsScreen() {
         <View style={styles.metricsContainer}>
           <View style={styles.metricsHeaderRow}>
             <Text style={styles.sectionHeader}>DYNAMIC METRIC HISTORY</Text>
-            <TouchableOpacity style={styles.addMetricTextButton}>
+            <TouchableOpacity style={styles.addMetricTextButton} onPress={openLogMetricModal} testID="log-metric-button">
               <Ionicons name="add-circle" size={16} color="#1C1C1E" />
               <Text style={styles.addMetricText}>Log Metrics</Text>
             </TouchableOpacity>
@@ -168,26 +267,117 @@ export default function ClientProfileDetailsScreen() {
           ) : (
             profile.metricsHistory.map((metric: any) => (
               <View key={metric.id} style={styles.metricRowCard}>
-                <View>
-                  <Text style={styles.metricDateText}>
-                    {new Date(metric.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </Text>
-                </View>
-                <View style={styles.metricValuesGroup}>
-                  <View style={styles.valueItem}>
-                    <Text style={styles.valueMetaLabel}>WEIGHT</Text>
-                    <Text style={styles.valueNumber}>{metric.weight ? `${metric.weight} kg` : '--'}</Text>
+                <TouchableOpacity
+                  style={styles.metricRowBody}
+                  onPress={() => openEditMetricModal(metric)}
+                  testID={`metric-row-${metric.id}`}
+                >
+                  <View>
+                    <Text style={styles.metricDateText}>
+                      {new Date(metric.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </Text>
                   </View>
-                  <View style={styles.valueItem}>
-                    <Text style={styles.valueMetaLabel}>BODY FAT</Text>
-                    <Text style={styles.valueNumber}>{metric.body_fat_pct ? `${metric.body_fat_pct}%` : '--'}</Text>
+                  <View style={styles.metricValuesGroup}>
+                    <View style={styles.valueItem}>
+                      <Text style={styles.valueMetaLabel}>WEIGHT</Text>
+                      <Text style={styles.valueNumber}>{metric.weight ? `${metric.weight} kg` : '--'}</Text>
+                    </View>
+                    <View style={styles.valueItem}>
+                      <Text style={styles.valueMetaLabel}>BODY FAT</Text>
+                      <Text style={styles.valueNumber}>{metric.body_fat_pct ? `${metric.body_fat_pct}%` : '--'}</Text>
+                    </View>
                   </View>
-                </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.metricDeleteButton}
+                  onPress={() => handleDeleteMetric(metric.id)}
+                  testID={`delete-metric-${metric.id}`}
+                >
+                  <Ionicons name="trash-outline" size={16} color="#FF3B30" />
+                </TouchableOpacity>
               </View>
             ))
           )}
         </View>
       </ScrollView>
+
+      {/* Log/Edit Metric modal */}
+      <Modal
+        visible={metricModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setMetricModalVisible(false)}
+      >
+        <Pressable style={styles.backdrop} onPress={() => setMetricModalVisible(false)}>
+          <Pressable style={styles.metricSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>{editingMetricId ? 'Edit Metric Entry' : 'Log Metrics'}</Text>
+              <TouchableOpacity onPress={() => setMetricModalVisible(false)} style={styles.closeButton}>
+                <Ionicons name="close" size={22} color="#8E8E93" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>DATE</Text>
+              <TouchableOpacity
+                style={styles.selectField}
+                onPress={() => setMetricDatePickerVisible(true)}
+                disabled={savingMetric}
+              >
+                <Text style={styles.selectFieldText}>{formatDateLabel(metricForm.date)}</Text>
+                <Ionicons name="calendar-outline" size={18} color="#8E8E93" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>WEIGHT (KG)</Text>
+              <TextInput
+                placeholder="78"
+                placeholderTextColor="#C7C7CC"
+                keyboardType="decimal-pad"
+                style={styles.metricInputField}
+                value={metricForm.weight}
+                onChangeText={(v) => setMetricForm((p) => ({ ...p, weight: v }))}
+                editable={!savingMetric}
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>BODY FAT %</Text>
+              <TextInput
+                placeholder="15"
+                placeholderTextColor="#C7C7CC"
+                keyboardType="decimal-pad"
+                style={styles.metricInputField}
+                value={metricForm.bodyFatPct}
+                onChangeText={(v) => setMetricForm((p) => ({ ...p, bodyFatPct: v }))}
+                editable={!savingMetric}
+              />
+            </View>
+
+            <TouchableOpacity
+              style={[styles.metricSubmitButton, savingMetric && styles.disabledButton]}
+              onPress={handleSaveMetric}
+              disabled={savingMetric}
+              testID="save-metric-submit"
+            >
+              {savingMetric ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Text style={styles.metricSubmitText}>{editingMetricId ? 'Save Changes' : 'Log Entry'}</Text>
+              )}
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <MonthCalendarModal
+        visible={metricDatePickerVisible}
+        onClose={() => setMetricDatePickerVisible(false)}
+        selectedDate={metricForm.date}
+        onSelectDate={(iso) => setMetricForm((p) => ({ ...p, date: iso }))}
+        title="Select a Date"
+      />
     </SafeAreaView>
   );
 }
@@ -338,9 +528,23 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  metricRowBody: {
+    flex: 1,
+    flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+  },
+  metricDeleteButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#FFF0EF',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   metricDateText: {
     fontSize: 15,
@@ -372,5 +576,84 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 12,
     fontStyle: 'italic',
+  },
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  metricSheet: {
+    backgroundColor: '#FFF',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 32,
+    gap: 16,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  sheetTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#1C1C1E',
+  },
+  closeButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#F2F2F7',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  inputGroup: {
+    gap: 6,
+  },
+  inputLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#8E8E93',
+    letterSpacing: 0.5,
+  },
+  selectField: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#F2F2F7',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    height: 48,
+  },
+  selectFieldText: {
+    color: '#1C1C1E',
+    fontSize: 15,
+  },
+  metricInputField: {
+    backgroundColor: '#F2F2F7',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    height: 48,
+    color: '#1C1C1E',
+    fontSize: 15,
+  },
+  metricSubmitButton: {
+    backgroundColor: '#1C1C1E',
+    height: 52,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  disabledButton: {
+    backgroundColor: '#3A3A3C',
+    opacity: 0.7,
+  },
+  metricSubmitText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });
