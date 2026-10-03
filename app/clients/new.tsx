@@ -1,5 +1,5 @@
 // app/clients/new.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   StyleSheet, 
   Text, 
@@ -12,19 +12,47 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context'; // Optimized context package import
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../lib/supabase';
-import { createClient } from '../../lib/queries/clients'; // Clean abstracted backend query layout
+import { createClient, getClientForEdit, updateClient } from '../../lib/queries/clients'; // Clean abstracted backend query layout
 
 export default function AddClientScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ editClientId?: string }>();
+  const isEditMode = typeof params.editClientId === 'string' && params.editClientId.length > 0;
+
   const [loading, setLoading] = useState(false);
+  const [loadingExisting, setLoadingExisting] = useState(isEditMode);
   const [form, setForm] = useState({ 
     name: '', 
     height: '', 
     target: '', 
     constraints: '' 
   });
+
+  useEffect(() => {
+    if (!isEditMode || !params.editClientId) return;
+
+    (async () => {
+      try {
+        const { data, error } = await getClientForEdit(params.editClientId as string);
+        if (error) throw error;
+        if (!data) throw new Error('This client could not be found.');
+
+        setForm({
+          name: data.name ?? '',
+          height: data.height != null ? String(data.height) : '',
+          target: data.fitness_goals ?? '',
+          constraints: data.medical_constraints && data.medical_constraints !== 'None' ? data.medical_constraints : '',
+        });
+      } catch (error: any) {
+        console.error('❌ Failed to load client for edit:', error.message);
+        Alert.alert('Couldn\u2019t Load Client', error.message || 'An unexpected server issue occurred.');
+      } finally {
+        setLoadingExisting(false);
+      }
+    })();
+  }, [isEditMode, params.editClientId]);
 
   const handleSave = async () => {
     if (!form.name.trim()) {
@@ -35,19 +63,36 @@ export default function AddClientScreen() {
     setLoading(true);
 
     try {
+      const parsedHeight = form.height.trim() ? parseFloat(form.height) : null;
+      const safeHeight = isNaN(parsedHeight as number) ? null : parsedHeight;
+
+      if (isEditMode) {
+        const { error: updateError } = await updateClient(params.editClientId as string, {
+          name: form.name.trim(),
+          height: safeHeight,
+          fitnessGoals: form.target.trim() || null,
+          medicalConstraints: form.constraints.trim() || 'None',
+        });
+
+        if (updateError) throw updateError;
+
+        Alert.alert('Success', 'Client profile updated!', [
+          { text: 'OK', onPress: () => router.back() }
+        ]);
+        return;
+      }
+
       const { data: { user }, error: userError } = await supabase.auth.getUser();
-      
+
       if (userError || !user) {
         throw new Error(userError?.message || 'Authenticated trainer session not found.');
       }
-
-      const parsedHeight = form.height.trim() ? parseFloat(form.height) : null;
 
       // Call our clean external query function directly
       const { error: insertError } = await createClient({
         trainerId: user.id,
         name: form.name.trim(),
-        height: isNaN(parsedHeight as number) ? null : parsedHeight,
+        height: safeHeight,
         fitnessGoals: form.target.trim() || null,
         medicalConstraints: form.constraints.trim() || 'None',
       });
@@ -66,6 +111,21 @@ export default function AddClientScreen() {
     }
   };
 
+  if (loadingExisting) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.navBar}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <Ionicons name="chevron-back" size={24} color="#1C1C1E" />
+          </TouchableOpacity>
+          <Text style={styles.navTitle}>Edit Profile</Text>
+          <View style={{ width: 40 }} />
+        </View>
+        <ActivityIndicator style={{ marginTop: 40 }} />
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Navigation App Header */}
@@ -77,7 +137,7 @@ export default function AddClientScreen() {
         >
           <Ionicons name="chevron-back" size={24} color="#1C1C1E" />
         </TouchableOpacity>
-        <Text style={styles.navTitle}>New Profile</Text>
+        <Text style={styles.navTitle}>{isEditMode ? 'Edit Profile' : 'New Profile'}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -139,6 +199,7 @@ export default function AddClientScreen() {
 
         {/* Submit Save Button */}
         <TouchableOpacity 
+          testID={isEditMode ? 'edit-client-submit' : 'create-client-submit'}
           style={[styles.submitButton, loading && styles.disabledButton]} 
           onPress={handleSave}
           disabled={loading}
@@ -146,7 +207,7 @@ export default function AddClientScreen() {
           {loading ? (
             <ActivityIndicator size="small" color="#FFF" />
           ) : (
-            <Text style={styles.submitButtonText}>Create Client Profile</Text>
+            <Text style={styles.submitButtonText}>{isEditMode ? 'Save Changes' : 'Create Client Profile'}</Text>
           )}
         </TouchableOpacity>
       </ScrollView>
