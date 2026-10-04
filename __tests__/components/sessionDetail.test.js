@@ -189,8 +189,10 @@ describe('Session Detail Screen', () => {
     fireEvent.press(exerciseCardBody);
 
     expect(mockPush).toHaveBeenCalledWith({
-      pathname: '/session/session-1/exercise/session-exercise-1',
+      pathname: '/session/[id]/exercise/[sessionExerciseId]',
       params: {
+        id: 'session-1',
+        sessionExerciseId: 'session-exercise-1',
         exerciseName: 'Back Squat',
         targetSets: '3',
         targetReps: '10',

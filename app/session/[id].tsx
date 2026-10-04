@@ -705,9 +705,18 @@ export default function SessionDetailScreen() {
                 activeOpacity={0.7}
                 testID={`exercise-card-body-${ex.id}`}
                 onPress={() => {
+                  // expo-router's typed routes can match a single dynamic
+                  // segment interpolated into a template string (e.g.
+                  // `/session/${id}`), but not a two-level nested dynamic
+                  // path like this one — the bracket-pattern + params form
+                  // is what the route's own [id]/exercise/[sessionExerciseId]
+                  // file structure expects, and is what TypeScript can
+                  // actually check against.
                   router.push({
-                    pathname: `/session/${details.id}/exercise/${ex.id}`,
+                    pathname: '/session/[id]/exercise/[sessionExerciseId]',
                     params: {
+                      id: details.id,
+                      sessionExerciseId: ex.id,
                       exerciseName: ex.exercise?.name ?? 'Exercise',
                       targetSets: target?.target_sets != null ? String(target.target_sets) : '',
                       targetReps: target?.target_reps != null ? String(target.target_reps) : '',

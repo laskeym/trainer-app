@@ -147,9 +147,13 @@ describe('Client Detail Screen', () => {
     expect(Alert.alert).toHaveBeenCalledWith('Delete Failed', 'Network error');
   });
 
-  it('renders existing metric history rows', async () => {
+  it('renders existing metric history rows with a timezone-safe date', async () => {
     const { findByText } = await render(<ClientProfileDetailsScreen />);
 
+    // Parsed as a local calendar date (year, month, day components), not
+    // via new Date('2026-09-01') directly — that parses as UTC midnight and
+    // can roll back to Aug 31 for any timezone behind UTC. This assertion
+    // is only meaningful because formatDateLabel avoids that footgun.
     expect(await findByText('Sep 1, 2026')).toBeTruthy();
     expect(await findByText('78 kg')).toBeTruthy();
     expect(await findByText('15%')).toBeTruthy();

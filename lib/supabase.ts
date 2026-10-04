@@ -19,9 +19,34 @@ const supabaseAnonKey = useLocal
   ? process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY_LOCAL!
   : process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY_REMOTE!
 
+// expo-router's web output does a server-side render pass in a plain
+// Node.js process before anything ever reaches a real browser — no
+// `window`, no `localStorage`. AsyncStorage's web implementation is
+// resolved purely by Metro's platform-target file resolution (not a
+// runtime check), so it assumes a browser is always present whenever
+// targeting web, and touches `window`/`localStorage` directly. Supabase's
+// auth client tries to restore a persisted session the instant
+// createClient() runs, so passing AsyncStorage through unconditionally
+// crashes that Node SSR process immediately with "window is not defined"
+// — taking the whole dev server down with it.
+//
+// React Native's own runtime polyfills `window` as an alias for `global`
+// (see InitializeCore), so `window` is defined in true native app
+// execution and in a real browser — it's only ever undefined during this
+// specific Node SSR pass. There's no real user session to restore
+// server-side anyway, so storage is only wired up where it can safely run;
+// it's a harmless no-op otherwise.
+const isServerRender = typeof window === 'undefined'
+
+const noopStorage = {
+  getItem: async () => null,
+  setItem: async () => {},
+  removeItem: async () => {},
+}
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: AsyncStorage,
+    storage: isServerRender ? noopStorage : AsyncStorage,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
