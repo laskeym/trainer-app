@@ -151,3 +151,57 @@ export async function getClientDetailsWithHistory(clientId: string) {
 
   return { data: formattedProfile, error: null };
 }
+
+export interface LogClientMetricInput {
+  clientId: string;
+  date: string; // 'YYYY-MM-DD'
+  weight: number | null;
+  bodyFatPct: number | null;
+}
+
+/**
+ * Appends one entry to a client's dynamic metric history. Both weight and
+ * body_fat_pct are independently nullable at the schema level — a trainer
+ * might only have one of the two on a given visit — the UI just requires
+ * at least one of them be filled in so an entry isn't completely empty.
+ */
+export async function createClientMetric(input: LogClientMetricInput) {
+  const { data, error } = await supabase
+    .from('client_metric')
+    .insert({
+      client_id: input.clientId,
+      date: input.date,
+      weight: input.weight,
+      body_fat_pct: input.bodyFatPct,
+    })
+    .select()
+    .single();
+
+  return { data, error };
+}
+
+export interface UpdateClientMetricInput {
+  date: string;
+  weight: number | null;
+  bodyFatPct: number | null;
+}
+
+export async function updateClientMetric(metricId: string, input: UpdateClientMetricInput) {
+  const { data, error } = await supabase
+    .from('client_metric')
+    .update({
+      date: input.date,
+      weight: input.weight,
+      body_fat_pct: input.bodyFatPct,
+    })
+    .eq('id', metricId)
+    .select()
+    .single();
+
+  return { data, error };
+}
+
+export async function deleteClientMetric(metricId: string) {
+  const { error } = await supabase.from('client_metric').delete().eq('id', metricId);
+  return { error };
+}
