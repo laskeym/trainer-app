@@ -29,6 +29,11 @@ function todayIso(): string {
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
 }
 
+// Local-calendar-date formatting, not new Date(iso) directly — a bare
+// 'YYYY-MM-DD' string parses as UTC midnight per spec, which rolls back to
+// the previous day for any timezone behind UTC. Same reasoning as
+// toIsoDateLocal/parseIsoDateLocal elsewhere in this app (dashboard,
+// MonthCalendarModal, session scheduling).
 function formatDateLabel(iso: string): string {
   const [y, m, d] = iso.split('-').map(Number);
   return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -274,7 +279,7 @@ export default function ClientProfileDetailsScreen() {
                 >
                   <View>
                     <Text style={styles.metricDateText}>
-                      {new Date(metric.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      {formatDateLabel(metric.date)}
                     </Text>
                   </View>
                   <View style={styles.metricValuesGroup}>
