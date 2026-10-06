@@ -2,12 +2,8 @@ name: Tests
 
 on:
   pull_request:
-    paths:
-      - 'supabase/migrations/**'
-      - '__tests__/**'
-      - '**.test.js'
   push:
-    branches: [main]
+    branches: [master]
 
 jobs:
   test:
@@ -21,6 +17,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
 
       - uses: supabase/setup-cli@v1
         with:
