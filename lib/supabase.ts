@@ -5,6 +5,20 @@ import { createClient } from '@supabase/supabase-js'
 
 const useLocal = process.env.EXPO_PUBLIC_USE_LOCAL_SUPABASE === 'true'
 
+// The local stack only exists on a developer's machine (10.0.2.2 /
+// 127.0.0.1), so a release bundle pointed at it can never reach a backend.
+// EXPO_PUBLIC_* values are inlined when the JS is bundled, which means a
+// stray .env with the flag on would silently bake that into a build or an
+// OTA update. Fail loudly at startup instead of shipping an app where every
+// request just times out.
+if (!__DEV__ && useLocal) {
+  throw new Error(
+    'EXPO_PUBLIC_USE_LOCAL_SUPABASE is "true" in a release build. ' +
+      'Release builds must use the remote Supabase project: set ' +
+      'EXPO_PUBLIC_USE_LOCAL_SUPABASE="false" and rebuild.'
+  )
+}
+
 function getLocalSupabaseUrl() {
   if (Platform.OS === 'android') {
     return 'http://10.0.2.2:54321' // Android emulator's alias for host localhost
