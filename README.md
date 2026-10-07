@@ -6,7 +6,7 @@ A mobile app for personal trainers to track clients, log workouts, and schedule 
 
 - **Frontend:** React Native (Expo, Navigation TypeScript template)
 - **Backend:** Supabase (Postgres, Auth, Storage, Realtime)
-- **Offline sync:** WatermelonDB
+- **Offline sync:** PowerSync (on-device SQLite synced with Supabase; see [powersync/README.md](powersync/README.md))
 - **Testing:** Jest / Vitest, Supabase CLI local stack
 
 ## Getting Started
@@ -16,7 +16,7 @@ A mobile app for personal trainers to track clients, log workouts, and schedule 
 - Node.js
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (required for local Supabase)
 - [Supabase CLI](https://supabase.com/docs/guides/cli): `npm install -g supabase`
-- Expo Go app (for testing on a physical device)
+- Android Studio (Android SDK + emulator) and JDK 17+, and/or Xcode — the app uses native modules, so it runs as a development build, not in Expo Go
 
 ### Setup
 
@@ -38,9 +38,9 @@ A mobile app for personal trainers to track clients, log workouts, and schedule 
 
 4. Start the app:
    ```bash
-   npx expo start
+   npx expo run:android   # or: npx expo run:ios
    ```
-   Scan the QR code with Expo Go, or press `i` / `a` for a simulator.
+   This generates the native project (`android/` / `ios/`, both gitignored), builds a development build, installs it on the connected emulator or device and starts Metro. After the first build, `npx expo start` is enough unless native dependencies change.
 
 ## Database & Migrations
 
@@ -86,6 +86,7 @@ npm test
 |---|---|
 | `EXPO_PUBLIC_SUPABASE_URL` | Your Supabase project URL |
 | `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon (public) API key |
+| `EXPO_PUBLIC_POWERSYNC_URL` | PowerSync instance URL; leave empty to run without sync |
 
 Never commit `.env` — it's gitignored. Use `.env.example` (blank values) so collaborators know what to set.
 

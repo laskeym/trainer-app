@@ -59,6 +59,12 @@ export default function ClientsScreen() {
           <Text style={styles.metaLabel}>MANAGEMENT</Text>
           <Text style={styles.screenTitle}>My Clients</Text>
         </View>
+        {/* Development builds only: opens the PowerSync spike screen. */}
+        {__DEV__ && (
+          <TouchableOpacity onPress={() => router.push('/powersync-spike')} testID="open-powersync-spike">
+            <Ionicons name="sync-circle-outline" size={28} color="#8E8E93" />
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Modern High-Contrast Search Block */}
@@ -138,6 +144,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#F9F9FB',
   },
   header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     paddingHorizontal: 24,
     marginTop: 16,
   },

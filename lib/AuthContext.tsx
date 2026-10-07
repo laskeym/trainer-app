@@ -2,6 +2,7 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
+import { clearPowerSync } from './powersync/db'
 
 const AuthContext = createContext<{
   session: Session | null
@@ -45,7 +46,17 @@ useEffect(() => {
   const signUp = (email: string, password: string) =>
     supabase.auth.signUp({ email, password })
 
-  const signOut = () => supabase.auth.signOut()
+  // Synced rows include client names and medical notes, so they come off the
+  // device before the session does. A failure to wipe must not trap the
+  // trainer in a signed-in state, so it's reported and sign-out carries on.
+  const signOut = async () => {
+    try {
+      await clearPowerSync()
+    } catch (error: any) {
+      console.error('Failed to clear local data on sign-out:', error?.message)
+    }
+    return supabase.auth.signOut()
+  }
 
   return (
     <AuthContext.Provider value={{ session, loading, signIn, signUp, signOut }}>
