@@ -119,7 +119,10 @@ export async function getWorkoutSessionDetails(trainerId: string, sessionId: str
 
   if (error) return { data: null, error };
 
-  const sortedExercises = (data.day_type_template?.template_exercise ?? [])
+  // Without generated DB types supabase-js infers this to-one join as an
+  // array; at runtime day_type_template is a single object (or null).
+  const template = data.day_type_template as unknown as { template_exercise?: any[] } | null;
+  const sortedExercises = (template?.template_exercise ?? [])
     .slice()
     .sort((a: any, b: any) => a.order - b.order);
 
