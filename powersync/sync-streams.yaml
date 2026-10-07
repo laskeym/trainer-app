@@ -1,0 +1,69 @@
+# PowerSync Sync Streams for trainer-app.
+#
+# This file is the source of truth; it is deployed by pasting it into the
+# PowerSync Dashboard (instance -> Sync Streams -> Validate -> Deploy).
+# It contains no secrets.
+#
+# SECURITY: the PowerSync replication role has BYPASSRLS, so Postgres RLS
+# does NOT apply to anything synced down to a device. These queries are the
+# only thing keeping one trainer's rows off another trainer's phone. Every
+# query below has to mirror the matching RLS policy in supabase/migrations
+# (auth.uid() in RLS == auth.user_id() here). Uploads still go through
+# supabase-js as the signed-in trainer, so RLS keeps guarding writes.
+#
+# Any change here needs the two-trainer check in powersync/README.md re-run.
+
+config:
+  edition: 3
+
+streams:
+  # Everything a trainer owns, synced automatically on connect so the whole
+  # app works offline.
+  trainer_data:
+    auto_subscribe: true
+    queries:
+      # trainer_self_access
+      - SELECT * FROM trainer WHERE id = auth.user_id()
+
+      # client_owner_access
+      - SELECT * FROM client WHERE trainer_id = auth.user_id()
+
+      # client_metric_owner_access (owned through client)
+      - |
+        SELECT client_metric.* FROM client_metric
+          INNER JOIN client ON client_metric.client_id = client.id
+        WHERE client.trainer_id = auth.user_id()
+
+      # template_owner_access
+      - SELECT * FROM day_type_template WHERE trainer_id = auth.user_id()
+
+      # template_exercise_owner_access (owned through day_type_template)
+      - |
+        SELECT template_exercise.* FROM template_exercise
+          INNER JOIN day_type_template ON template_exercise.template_id = day_type_template.id
+        WHERE day_type_template.trainer_id = auth.user_id()
+
+      # session_owner_access
+      - SELECT * FROM workout_session WHERE trainer_id = auth.user_id()
+
+      # session_exercise_owner_access (owned through workout_session)
+      - |
+        SELECT session_exercise.* FROM session_exercise
+          INNER JOIN workout_session ON session_exercise.session_id = workout_session.id
+        WHERE workout_session.trainer_id = auth.user_id()
+
+      # set_log_owner_access (owned through session_exercise -> workout_session)
+      - |
+        SELECT set_log.* FROM set_log
+          INNER JOIN session_exercise ON set_log.session_exercise_id = session_exercise.id
+          INNER JOIN workout_session ON session_exercise.session_id = workout_session.id
+        WHERE workout_session.trainer_id = auth.user_id()
+
+      # exercise_read_shared_or_own, the "own" half: a trainer's custom exercises
+      - SELECT * FROM exercise WHERE trainer_id = auth.user_id()
+
+  # exercise_read_shared_or_own, the "shared" half: the common exercise
+  # library (trainer_id IS NULL) is the same single bucket for every trainer.
+  shared_exercises:
+    auto_subscribe: true
+    query: SELECT * FROM exercise WHERE trainer_id IS NULL

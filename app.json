@@ -8,9 +8,11 @@
     "scheme": "trainerapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.trainerspike"
     },
     "android": {
+      "package": "com.example.trainerspike",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

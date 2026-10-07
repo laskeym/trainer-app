@@ -1,6 +1,7 @@
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { AuthProvider } from '../lib/AuthContext'
+import { PowerSyncProvider } from '../lib/powersync/PowerSyncProvider'
 
 import { useFonts } from 'expo-font';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
@@ -43,7 +44,9 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <RootLayoutNav />
+          <PowerSyncProvider>
+            <RootLayoutNav />
+          </PowerSyncProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
@@ -110,6 +113,9 @@ function RootLayoutNav() {
         </Stack.Protected>
         <Stack.Protected guard={!!session}>
           <Stack.Screen name="templates/[id]/index" options={{ headerShown: false }} />
+        </Stack.Protected>
+        <Stack.Protected guard={!!session && __DEV__}>
+          <Stack.Screen name="powersync-spike" options={{ title: 'PowerSync spike' }} />
         </Stack.Protected>
       </Stack>
     </ThemeProvider>
